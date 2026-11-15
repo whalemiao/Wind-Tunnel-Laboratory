@@ -199,7 +199,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.2.0 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.2.1 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -269,6 +269,11 @@
   let DS = Math.max(1, Math.min(3, parseInt(QS.get('ds') || '2', 10) || 2));
   let DX = 0, DY = 0;
   let dye, dyeTmp, solidD, dyeCv, dyeCtx;
+  // 掩码按网格的 MS 倍栅格化，再用"覆盖率"决定格子算不算固体 ——
+  // 否则 320×180 的格子会把天线、薄支架这种细节整个吃掉
+  const MS = 4;
+  let cov = null;          // 每个物理格被物体覆盖的比例 0..1
+  let fineMask = null;     // 染料级的固体掩码（高精度）
   let us, vs;          // 平滑后的速度场（仅用于流线积分，防止锯齿状抽动）
   let RS = 2;          // 渲染倍率（画布 = 网格 × RS）
   let fieldCv = null, fieldCtx = null;   // 标量场离屏画布
@@ -302,6 +307,7 @@
     p = new Float32Array(n); div = new Float32Array(n);
     curl = new Float32Array(n);
     solid = new Uint8Array(n);
+    cov = new Float32Array(n);
     us = new Float32Array(n); vs = new Float32Array(n);
     maskImg = new Uint8Array(n); paint = new Uint8Array(n);
     // 渲染分辨率 = 网格 × RS。网格负责物理，RS 负责"线看起来细不细"
@@ -416,13 +422,26 @@
   }
 
   /** 图片掩码 + 手画掩码 合并；只改 solid，不重置流场（涂抹时流场要连续） */
-  /** 把物理网格的 solid 放大到染料网格（每个粗格填 DS×DS 个细格） */
+  /**
+   * 合成染料级固体：高精度掩码 ∪ 手画区域。
+   * 没有高精度掩码时（老路径）退化成把粗网格上采样。
+   */
   function syncSolidFine() {
     if (!solidD) return;
+    if (!fineMask) {
+      for (let y = 0; y < DY; y++) {
+        const sy = (y / DS) | 0;
+        for (let x = 0; x < DX; x++) {
+          solidD[atD(x, y)] = solid[at((x / DS) | 0, sy)];
+        }
+      }
+      return;
+    }
     for (let y = 0; y < DY; y++) {
       const sy = (y / DS) | 0;
       for (let x = 0; x < DX; x++) {
-        solidD[atD(x, y)] = solid[at((x / DS) | 0, sy)];
+        const cx = (x / DS) | 0;
+        solidD[atD(x, y)] = (fineMask[atD(x, y)] || paint[at(cx, sy)]) ? 1 : 0;
       }
     }
   }
@@ -637,6 +656,12 @@
       for (let x = 1; x < NX - 1; x++) {
         const i = at(x, y);
         if (solid[i]) { u[i] = 0; v[i] = 0; continue; }
+        // 边缘格（覆盖率 0.15~0.5）：按覆盖比例削弱速度，
+        // 这样物体轮廓是"半透"的，气流不会从笔画缝里直穿
+        if (cov && cov[i] > 0.15) {
+          const k = 1 - 0.85 * cov[i];
+          u[i] *= k; v[i] *= k;
+        }
         if (solid[i - 1] || solid[i + 1] || solid[i - NX] || solid[i + NX]) {
           const f = 0.96 - 0.03 * (1 - visc);
           u[i] *= f; v[i] *= f;
@@ -1021,21 +1046,11 @@
   /** 把 source 画布按 objX/objY/objScale/objAngle 摆到网格画布上，再取 alpha 当掩码 */
   function rebuildObject() {
     if (!srcImg) return;
-    const c = document.createElement('canvas');
-    c.width = NX; c.height = NY;
-    const g = c.getContext('2d');
-    g.clearRect(0, 0, NX, NY);
 
     // 等比缩放到网格（长边占 85%）
     const fit = Math.min(NX * 0.9 / srcImg.width, NY * 0.9 / srcImg.height);
     const w = srcImg.width * fit * objScale;
     const h = srcImg.height * fit * objScale;
-
-    g.save();
-    g.translate(objX * NX, objY * NY);
-    g.rotate(objAngle * Math.PI / 180);
-    g.drawImage(srcImg, -w / 2, -h / 2, w, h);
-    g.restore();
 
     // 只把「中心点」限制在画布内：大图允许探出去（想完整看就缩小），
     // 否则一张宽图会把可拖动范围压成中间一窄条
@@ -1044,16 +1059,81 @@
 
     // 只存"摆好位置后的网格尺寸几何参数"，渲染时用原图直接画（见 drawObject）
     objGeom = { w, h };
-    img = c;
 
-    const d = g.getImageData(0, 0, NX, NY).data;
-    // 第一次：必须初始化流场（全场灌满均匀来流）
-    // 之后：只更新掩码，保持流场连续（拖动才不卡）
+    // ①②③ 三套光栅化：
+    //   粗（NX×NY）   —— 给 UI 一个缩略图
+    //   超采样（MS×）  —— 算每个格子的覆盖率，边缘才是抗锯齿的
+    //   染料级（DS×）  —— 细网格的固体，保留细节
     const needInit = !flowInited;
-    applyMask((x, y) => d[((y | 0) * NX + (x | 0)) * 4 + 3], needInit);
+    rasterizeMask(w, h, needInit);
     flowInited = true;
-    // 不在这里清烟：拖动时靠"加速淡出"消化旧轨迹，
-    // 整片 resetSmoke 会把已经画好的轨迹也一起抹掉（用户反馈"轨迹失踪"）
+  }
+
+  /** 把源图按当前变换光栅化到三套网格，并写入 solid / cov / solidD */
+  function rasterizeMask(w, h, needInit) {
+    const MX = NX * MS, MY = NY * MS;
+
+    // ── 超采样画布：算覆盖率 ──
+    const hc = document.createElement('canvas');
+    hc.width = MX; hc.height = MY;
+    const hg = hc.getContext('2d');
+    hg.clearRect(0, 0, MX, MY);
+    hg.save();
+    hg.scale(MS, MS);                                  // 之后按网格坐标画
+    hg.translate(objX * NX, objY * NY);
+    hg.rotate(objAngle * Math.PI / 180);
+    hg.drawImage(srcImg, -w / 2, -h / 2, w, h);
+    hg.restore();
+
+    const hi = hg.getImageData(0, 0, MX, MY).data;
+    const coverAt = (x, y) => hi[((y | 0) * MX + (x | 0)) * 4 + 3] / 255;
+
+    // ── 粗网格：块内平均覆盖率 ──
+    const n = NX * NY;
+    const covMask = new Float32Array(n);
+    const inv = 1 / (MS * MS);
+    for (let y = 0; y < NY; y++) {
+      for (let x = 0; x < NX; x++) {
+        let sum = 0;
+        for (let dy = 0; dy < MS; dy++) {
+          const yy = y * MS + dy;
+          for (let dx = 0; dx < MS; dx++) sum += coverAt(x * MS + dx, yy);
+        }
+        covMask[at(x, y)] = sum * inv;
+      }
+    }
+
+    // ── 细网格（染料级）：直接按中心点采样，保留薄结构 ──
+    const fine = new Uint8Array(DX * DY);
+    for (let y = 0; y < DY; y++) {
+      const sy = (y / DS) * MS + MS * 0.5;              // 细格中心 → 超采样坐标
+      for (let x = 0; x < DX; x++) {
+        const sx = (x / DS) * MS + MS * 0.5;
+        fine[atD(x, y)] = coverAt(sx, sy) > 0.5 ? 1 : 0;
+      }
+    }
+    solidDFromFine(fine);
+    cov = covMask;
+    if (!solid) solid = new Uint8Array(n);
+    updateSolidFromCov();
+    if (!maskImg) maskImg = new Uint8Array(n);
+    maskImg.set(solid);
+    mergePaint();
+    if (needInit) initFlow();
+  }
+
+  function solidDFromFine(fine) {
+    fineMask = fine;
+    solidD = fine.slice();
+  }
+
+  /** 覆盖率 > 0.5 算固体；0.15~0.5 是"边缘格"，速度要被削弱而不是硬挡 */
+  function updateSolidFromCov() {
+    for (let i = 0, n = NX * NY; i < n; i++) {
+      solid[i] = (cov[i] > 0.5 || paint[i]) ? 1 : 0;
+    }
+    for (let y = 0; y < NY; y++) { solid[at(0, y)] = 0; solid[at(NX - 1, y)] = 0; }
+    for (let x = 0; x < NX; x++) { solid[at(x, 0)] = 0; solid[at(x, NY - 1)] = 0; }
   }
 
   /** 把烟的累积层擦回背景色 */

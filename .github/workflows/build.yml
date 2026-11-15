@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: v0.2.0
+  RELEASE_TAG: v0.2.1
   # 注：这三个 job 都会把 index.html 里的 __BUILD_DATE__ 换成当天日期，
   # 让「关于」里显示"最后更新"，用户一眼能看出还在维护。
 
