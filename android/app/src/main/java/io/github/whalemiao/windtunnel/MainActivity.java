@@ -2,6 +2,9 @@ package io.github.whalemiao.windtunnel;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.TypedValue;
@@ -15,6 +18,7 @@ import android.webkit.WebViewClient;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -22,14 +26,20 @@ import java.io.StringWriter;
 /**
  * 最小的 WebView 壳：全屏显示 assets/index.html。
  *
- * 这一版刻意写得"笨"：
- *   · 不碰 WindowInsetsController（那是 API 30+ 的类，旧机上可能触发类校验失败）
- *   · 不用 lambda（避免脱糖器在旧 ART 上出问题）
- *   · onCreate 整段 try/catch —— 崩了就把堆栈画在屏幕上，不用连 adb 也能看原因
+ * 关键点（都是踩过的）：
+ *   1. DOM storage 要开 —— 页面用 localStorage 记预设
+ *   2. 视图层不要设 loadWithOverviewMode —— 否则页面按 980px 桌面宽度渲染，
+ *      媒体查询不命中，手机上侧边栏逻辑会走错分支
+ *   3. **必须实现 onShowFileChooser** —— 否则 <input type="file"> 点了毫无反应，
+ *      这是 WebView 与浏览器的最大差异之一
+ *   4. onCreate 整段 try/catch：崩了把堆栈画屏幕上，不连 adb 也能看原因
  */
 public class MainActivity extends Activity {
 
+    private static final int REQ_FILE = 1001;
+
     private WebView web;
+    private ValueCallback<Uri[]> fileCallback;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -37,7 +47,6 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         try {
-            // 线程级兜底：万一还有没抓到的异常，也画到屏幕上
             Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
                 @Override
                 public void uncaughtException(Thread t, Throwable e) {
@@ -60,10 +69,36 @@ public class MainActivity extends Activity {
             s.setBuiltInZoomControls(false);
             s.setDisplayZoomControls(false);
             s.setUseWideViewPort(true);
-            s.setLoadWithOverviewMode(false);   // 不要缩放到 980px 宽，否则页面按桌面版渲染
+            s.setLoadWithOverviewMode(false);   // 别缩放到 980px 宽，否则按桌面版渲染
 
             web.setWebViewClient(new WebViewClient());
-            web.setWebChromeClient(new WebChromeClient());
+            web.setWebChromeClient(new WebChromeClient() {
+                /** 网页里 <input type="file"> 被点击时走这里 */
+                @Override
+                public boolean onShowFileChooser(WebView view,
+                                                 ValueCallback<Uri[]> callback,
+                                                 FileChooserParams params) {
+                    // 上次没消费掉的回调要先结束，否则选择器只能弹一次
+                    if (fileCallback != null) {
+                        fileCallback.onReceiveValue(null);
+                        fileCallback = null;
+                    }
+                    fileCallback = callback;
+                    try {
+                        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("image/*");
+                        startActivityForResult(
+                                Intent.createChooser(intent, "选择透明底 PNG"), REQ_FILE);
+                        return true;
+                    } catch (Throwable e) {
+                        fileCallback = null;
+                        Toast.makeText(MainActivity.this,
+                                "没有可用的文件管理器", Toast.LENGTH_LONG).show();
+                        return false;
+                    }
+                }
+            });
             web.setBackgroundColor(0xFF05070D);
 
             setContentView(web);
@@ -74,7 +109,31 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 把异常堆栈直接画到屏幕上（不依赖 adb） */
+    /** 文件选择器的结果回到这里，再交还给网页 */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == REQ_FILE) {
+            Uri[] result = null;
+            if (resultCode == RESULT_OK && data != null) {
+                if (data.getData() != null) {
+                    result = new Uri[]{data.getData()};
+                } else if (data.getClipData() != null) {
+                    ClipData clip = data.getClipData();
+                    result = new Uri[clip.getItemCount()];
+                    for (int i = 0; i < clip.getItemCount(); i++) {
+                        result[i] = clip.getItemAt(i).getUri();
+                    }
+                }
+            }
+            if (fileCallback != null) {
+                fileCallback.onReceiveValue(result);
+                fileCallback = null;
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+
     private void showError(String title, Throwable e) {
         try {
             StringBuilder sb = new StringBuilder();
@@ -99,14 +158,11 @@ public class MainActivity extends Activity {
             sv.addView(tv, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
-
             setContentView(sv);
         } catch (Throwable ignored) {
-            // 连错误界面都画不出来的话，只能交给系统了
         }
     }
 
-    /** 全屏：只用老的 systemUiVisibility，所有版本都能跑（30+ 已废弃但依然生效） */
     @SuppressWarnings("deprecation")
     private void goFullscreen() {
         try {
@@ -121,7 +177,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 返回键先让网页处理（收起侧栏），网页没处理就退出 */
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
@@ -150,6 +205,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         try {
+            if (fileCallback != null) {
+                fileCallback.onReceiveValue(null);
+                fileCallback = null;
+            }
             if (web != null) web.destroy();
         } catch (Throwable ignored) {
         }
