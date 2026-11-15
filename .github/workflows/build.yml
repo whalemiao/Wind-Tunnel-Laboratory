@@ -7,6 +7,7 @@ on:
       - 'index.html'
       - 'android/**'
       - 'desktop/**'
+      - 'CHANGELOG.md'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
@@ -20,7 +21,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: v0.1.5
+  RELEASE_TAG: v0.1.6
+  # 注：这三个 job 都会把 index.html 里的 __BUILD_DATE__ 换成当天日期，
+  # 让「关于」里显示"最后更新"，用户一眼能看出还在维护。
 
 jobs:
   # ── 1. 安卓 APK ─────────────────────────────────────────────
@@ -28,6 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Stamp build date
+        run: sed -i "s/__BUILD_DATE__/$(date -u +%F)/" index.html
 
       - uses: actions/setup-java@v4
         with:
@@ -59,6 +65,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Stamp build date
+        shell: pwsh
+        run: |
+          $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+          (Get-Content index.html -Raw) -replace '__BUILD_DATE__', $date |
+            Set-Content index.html -NoNewline -Encoding utf8
+          Select-String -Path index.html -Pattern 'BUILD_DATE =' | ForEach-Object { $_.Line.Trim() }
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -72,7 +86,6 @@ jobs:
 
       - name: Show output
         run: |
-          dir out
           Get-Item out/WindTunnelLab.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}}
 
       - uses: actions/upload-artifact@v4
@@ -81,11 +94,13 @@ jobs:
           path: out/WindTunnelLab.exe
           if-no-files-found: error
 
-  # ── 3. 发布到 Release（两个安装包一起）─────────────────────
+  # ── 3. 发布到 Release（说明从 CHANGELOG 提取）──────────────
   release:
     needs: [apk, exe]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: apk
@@ -96,34 +111,52 @@ jobs:
           name: exe
           path: dist
 
-      - name: List assets
-        run: ls -lh dist
+      - name: Build release notes from CHANGELOG
+        run: |
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ["RELEASE_TAG"]
+          ver = tag.lstrip("v")
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(r"^##\s+" + re.escape(ver) + r"[^\n]*\n(.*?)(?=^##\s|\Z)",
+                        text, re.S | re.M)
+          changes = m.group(1).strip() if m else "_本版没有写更新说明_"
+          notes = f"""## 这次改了什么
+
+          {changes}
+
+          ---
+
+          ## 下载
+
+          | 平台 | 文件 | 说明 |
+          | --- | --- | --- |
+          | Windows | `WindTunnelLab.exe` | 单文件，自带 .NET 运行时，双击即用 |
+          | Android | `wind-tunnel-lab.apk` | debug 签名，安装时允许「未知来源」 |
+
+          网页版：https://whalemiao.github.io/Wind-Tunnel-Laboratory/
+
+          如果这里下载不动（会跳 objects.githubusercontent.com），用 Pages 上的同一份：
+
+          - EXE https://whalemiao.github.io/Wind-Tunnel-Laboratory/WindTunnelLab.exe
+          - APK https://whalemiao.github.io/Wind-Tunnel-Laboratory/wind-tunnel-lab.apk
+          """
+          open("RELEASE_NOTES.md", "w", encoding="utf-8").write(notes)
+          print(notes)
+          PY
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: 风洞实验室 ${{ env.RELEASE_TAG }}
-          body: |
-            两个安装包，网页版同一份代码：
-
-            | 平台 | 文件 | 说明 |
-            | --- | --- | --- |
-            | Windows | `WindTunnelLab.exe` | 单文件，自带 .NET 运行时，双击即用 |
-            | Android | `wind-tunnel-lab.apk` | debug 签名，安装时允许「未知来源」 |
-
-            网页版：https://whalemiao.github.io/Wind-Tunnel-Laboratory/
-
-            如果这里下载不动（要跳 objects.githubusercontent.com），
-            用 Pages 上的同一份文件：
-            - EXE https://whalemiao.github.io/Wind-Tunnel-Laboratory/WindTunnelLab.exe
-            - APK https://whalemiao.github.io/Wind-Tunnel-Laboratory/wind-tunnel-lab.apk
+          body_path: RELEASE_NOTES.md
           files: |
             dist/wind-tunnel-lab.apk
             dist/WindTunnelLab.exe
           make_latest: true
 
-  # ── 4. Pages（网页 + 两个安装包都在同一目录）───────────────
+  # ── 4. Pages（网页 + 两个安装包）───────────────────────────
   pages:
     needs: [apk, exe]
     runs-on: ubuntu-latest
@@ -132,6 +165,9 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Stamp build date
+        run: sed -i "s/__BUILD_DATE__/$(date -u +%F)/" index.html
 
       - name: Download APK
         uses: actions/download-artifact@v4
@@ -149,8 +185,8 @@ jobs:
         run: |
           mkdir -p site
           cp index.html v1-lbm.html test-tank.png site/
+          cp CHANGELOG.md README.md site/ 2>/dev/null || true
           cp -r shots site/ 2>/dev/null || true
-          cp README.md site/ 2>/dev/null || true
           touch site/.nojekyll
           ls -lh site
 

@@ -199,8 +199,9 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.1.5 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.1.6 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
+    <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
     <a class="about-link" href="https://github.com/whalemiao/Wind-Tunnel-Laboratory"
        target="_blank" rel="noopener">
@@ -239,6 +240,8 @@
 <script>
 (() => {
   /* ================= 参数 ================= */
+  // 构建时由 CI 替换成日期；本地直接打开时保持占位符，显示为「本地预览」
+  const BUILD_DATE = '__BUILD_DATE__';
   const QS = new URLSearchParams(location.search);
   const RES = QS.get('res') || '320x180';
   let NX = parseInt(RES.split('x')[0], 10) || 320;
@@ -1085,6 +1088,14 @@
       }, 420);
     };
     tick();
+  }
+
+  {
+    const el = document.getElementById('aboutUpdated');
+    if (el) {
+      el.textContent = '最后更新：' +
+        (BUILD_DATE.indexOf('__') === 0 ? '本地预览' : BUILD_DATE);
+    }
   }
 
   $('btnPick').onclick = () => $('file').click();
