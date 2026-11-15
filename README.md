@@ -5,7 +5,13 @@
 
 **在线玩**：<https://whalemiao.github.io/Wind-Tunnel-Laboratory/>
 
-**安卓 APK**：[wind-tunnel-lab.apk](https://whalemiao.github.io/Wind-Tunnel-Laboratory/wind-tunnel-lab.apk)（同一份也在 [Releases](https://github.com/whalemiao/Wind-Tunnel-Laboratory/releases) 里。debug 签名，安装时需允许「未知来源」）
+| 平台 | 下载 | 说明 |
+| --- | --- | --- |
+| 🌐 网页 | [直接打开](https://whalemiao.github.io/Wind-Tunnel-Laboratory/) | 手机/电脑都能用 |
+| 📱 安卓 | [wind-tunnel-lab.apk](https://whalemiao.github.io/Wind-Tunnel-Laboratory/wind-tunnel-lab.apk) | 约 275 KB，debug 签名，允许「未知来源」即可装 |
+| 💻 Windows | [WindTunnelLab.exe](https://whalemiao.github.io/Wind-Tunnel-Laboratory/WindTunnelLab.exe) | 约 63 MB 单文件，自带运行时，双击即用 |
+
+三个都在同一个 [Release](https://github.com/whalemiao/Wind-Tunnel-Laboratory/releases) 里。
 
 ![流线](shots/v8-01-流线-高速2.5-平滑.png)
 

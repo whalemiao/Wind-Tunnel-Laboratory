@@ -3,6 +3,11 @@ name: Build & Deploy
 on:
   push:
     branches: [main]
+    paths:
+      - 'index.html'
+      - 'android/**'
+      - 'desktop/**'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:
@@ -12,9 +17,13 @@ permissions:
 
 concurrency:
   group: site
-  cancel-in-progress: true
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: v0.1.4
 
 jobs:
+  # ── 1. 安卓 APK ─────────────────────────────────────────────
   apk:
     runs-on: ubuntu-latest
     steps:
@@ -34,31 +43,89 @@ jobs:
 
       - name: Collect APK
         run: |
-          mkdir -p apk-out
-          cp android/app/build/outputs/apk/debug/app-debug.apk apk-out/wind-tunnel-lab.apk
-          ls -lh apk-out
+          mkdir -p out
+          cp android/app/build/outputs/apk/debug/app-debug.apk out/wind-tunnel-lab.apk
+          ls -lh out
 
       - uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: apk-out/wind-tunnel-lab.apk
+          path: out/wind-tunnel-lab.apk
           if-no-files-found: error
 
-      - name: Publish to Release
+  # ── 2. Windows EXE ──────────────────────────────────────────
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish single-file exe
+        working-directory: desktop
+        run: >
+          dotnet publish -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -o ../out
+
+      - name: Show output
+        run: |
+          dir out
+          Get-Item out/WindTunnelLab.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: out/WindTunnelLab.exe
+          if-no-files-found: error
+
+  # ── 3. 发布到 Release（两个安装包一起）─────────────────────
+  release:
+    needs: [apk, exe]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: exe
+          path: dist
+
+      - name: List assets
+        run: ls -lh dist
+
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.4
-          name: 风洞实验室 v0.1.4
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: 风洞实验室 ${{ env.RELEASE_TAG }}
           body: |
-            安卓 APK（debug 签名，可直接安装；安装时需允许「未知来源」）。
+            两个安装包，网页版同一份代码：
 
-            安装包也放在网页同目录，下载更快：
-            https://whalemiao.github.io/Wind-Tunnel-Laboratory/wind-tunnel-lab.apk
-          files: apk-out/wind-tunnel-lab.apk
+            | 平台 | 文件 | 说明 |
+            | --- | --- | --- |
+            | Windows | `WindTunnelLab.exe` | 单文件，自带 .NET 运行时，双击即用 |
+            | Android | `wind-tunnel-lab.apk` | debug 签名，安装时允许「未知来源」 |
+
+            网页版：https://whalemiao.github.io/Wind-Tunnel-Laboratory/
+
+            如果这里下载不动（要跳 objects.githubusercontent.com），
+            用 Pages 上的同一份文件：
+            - EXE https://whalemiao.github.io/Wind-Tunnel-Laboratory/WindTunnelLab.exe
+            - APK https://whalemiao.github.io/Wind-Tunnel-Laboratory/wind-tunnel-lab.apk
+          files: |
+            dist/wind-tunnel-lab.apk
+            dist/WindTunnelLab.exe
           make_latest: true
 
+  # ── 4. Pages（网页 + 两个安装包都在同一目录）───────────────
   pages:
-    needs: apk
+    needs: [apk, exe]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -66,16 +133,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download APK into site dir
+      - name: Download APK
         uses: actions/download-artifact@v4
         with:
           name: apk
           path: site
 
-      - name: Copy site files
+      - name: Download EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: exe
+          path: site
+
+      - name: Copy web files
         run: |
           mkdir -p site
-          cp index.html v1-lbm.html test-tank.png site/ 2>/dev/null || true
+          cp index.html v1-lbm.html test-tank.png site/
           cp -r shots site/ 2>/dev/null || true
           cp README.md site/ 2>/dev/null || true
           touch site/.nojekyll
