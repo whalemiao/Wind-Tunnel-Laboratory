@@ -5,6 +5,8 @@
 
 **在线玩**：<https://whalemiao.github.io/Wind-Tunnel-Laboratory/>
 
+**安卓 APK**：[wind-tunnel-lab.apk](https://github.com/whalemiao/Wind-Tunnel-Laboratory/releases/download/apk-latest/wind-tunnel-lab.apk)（GitHub Actions 自动构建；debug 签名，安装时需允许「未知来源」）
+
 ![流线](shots/v8-01-流线-高速2.5-平滑.png)
 
 ## 这是什么
