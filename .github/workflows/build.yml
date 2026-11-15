@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: v0.1.4
+  RELEASE_TAG: v0.1.5
 
 jobs:
   # ── 1. 安卓 APK ─────────────────────────────────────────────

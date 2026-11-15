@@ -73,18 +73,26 @@
     body.panel-open #scrim { display: block; }
     aside { padding-top: 52px; }   /* 给左上角按钮让位 */
     main { width: 100%; }
-    #meta { display: none; }          /* 手机上空间小，状态文字让位给图标 */
-    .metabar { gap: 8px; padding: 6px 10px; justify-content: center; }
+    #meta { font-size: 10px; }
+    .metabar { gap: 8px; padding: 5px 10px; }
     .credit svg { width: 16px; height: 16px; }
   }
-  .metabar { display: flex; align-items: center; gap: 14px; padding: 5px 12px;
+  .metabar { padding: 5px 12px;
              border-top: 1px solid #161c28; }
   #meta { flex: 1; min-width: 0; font-size: 11px; color: #566178;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .credit { display: flex; gap: 10px; flex: 0 0 auto; }
-  .credit a { color: #6b7894; display: inline-flex; transition: color .15s, transform .15s; }
-  .credit a:hover { color: #5eead4; transform: translateY(-1px); }
-  .credit svg { width: 18px; height: 18px; display: block; }
+
+
+  .about-meta { font-size: 11px; color: #6b7894; line-height: 1.6; }
+  .about-tip { margin-top: 10px; color: #54607a; }
+  .about-link {
+    display: flex; align-items: center; gap: 9px; margin-top: 8px;
+    padding: 9px 11px; border: 1px solid #232b3e; border-radius: 9px;
+    background: #0f1420; color: #c3cee6; text-decoration: none; font-size: 12px;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .about-link:hover { border-color: #2f6f66; background: #101a22; color: #5eead4; }
+  .about-link svg { width: 17px; height: 17px; flex: 0 0 auto; }
 </style>
 </head>
 <body>
@@ -188,6 +196,34 @@
     风从左边吹，物体 = 图片里不透明的像素。
   </div>
 
+
+  <div class="group">
+    <label>关于</label>
+    <div class="about-meta">风洞实验室 v0.1.5 · MIT 许可</div>
+    <div class="about-meta">作者：whalemiao</div>
+
+    <a class="about-link" href="https://github.com/whalemiao/Wind-Tunnel-Laboratory"
+       target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span>GitHub · 源码 / 提 issue</span>
+    </a>
+
+    <a class="about-link" href="https://space.bilibili.com/3546600242678059"
+       target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linejoin="round" aria-hidden="true">
+        <rect x="2.7" y="6.7" width="18.6" height="13.6" rx="3.4"/>
+        <path d="M7.2 3.7 9.7 6.7M16.8 3.7 14.3 6.7" stroke-linecap="round"/>
+        <circle cx="8.7" cy="13.3" r="1.15" fill="currentColor" stroke="none"/>
+        <circle cx="15.3" cy="13.3" r="1.15" fill="currentColor" stroke="none"/>
+      </svg>
+      <span>B 站 · GitHub 打不开就来这</span>
+    </a>
+
+    <div class="about-meta about-tip">
+      有问题欢迎反馈；能描述清楚「什么操作、看到什么、期望什么」，修起来最快。
+    </div>
+  </div>
 </aside>
 
 <main>
@@ -195,22 +231,6 @@
   <div id="scrim"></div>
   <div class="metabar">
     <div id="meta">准备中…</div>
-    <div class="credit">
-      <a href="https://github.com/whalemiao/Wind-Tunnel-Laboratory" target="_blank" rel="noopener"
-         title="源码：github.com/whalemiao/Wind-Tunnel-Laboratory">
-        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-      </a>
-      <a href="https://space.bilibili.com/3546600242678059" target="_blank" rel="noopener"
-         title="B 站：space.bilibili.com/3546600242678059">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-             stroke-linejoin="round" aria-hidden="true">
-          <rect x="2.7" y="6.7" width="18.6" height="13.6" rx="3.4"/>
-          <path d="M7.2 3.7 9.7 6.7M16.8 3.7 14.3 6.7" stroke-linecap="round"/>
-          <circle cx="8.7" cy="13.3" r="1.15" fill="currentColor" stroke="none"/>
-          <circle cx="15.3" cy="13.3" r="1.15" fill="currentColor" stroke="none"/>
-        </svg>
-      </a>
-    </div>
   </div>
 </main>
 
@@ -1021,9 +1041,20 @@
   // 启动：窄屏默认收起
   applyPanel(!isNarrow());
 
+  // 只有宽度真的跨过断点时才重置，否则每次 resize（含启动时的一次）
+  // 都会把用户刚打开的面板关掉
+  let wasNarrow = isNarrow();
+  let resizeTimer = null;
   window.addEventListener('resize', () => {
-    panelOpen = !isNarrow();          // 尺寸变了按新宽度重置一次
-    applyPanel(panelOpen);
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const narrow = isNarrow();
+      if (narrow !== wasNarrow) {
+        wasNarrow = narrow;
+        applyPanel(!narrow);
+      }
+      fitCanvas();
+    }, 150);
   });
 
   // 调试/分享：?panel=open 直接打开
