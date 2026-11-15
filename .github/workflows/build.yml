@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Stamp build date
-        run: sed -i "s/__BUILD_DATE__/$(date -u +%F)/" index.html
+        run: sed -i "s/__BUILD_DATE__/$(TZ=Asia/Shanghai date +%F)/" index.html
 
       - uses: actions/setup-java@v4
         with:
@@ -68,7 +68,7 @@ jobs:
       - name: Stamp build date
         shell: pwsh
         run: |
-          $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
+          $date = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date), 'China Standard Time').ToString('yyyy-MM-dd')
           (Get-Content index.html -Raw) -replace '__BUILD_DATE__', $date |
             Set-Content index.html -NoNewline -Encoding utf8
           Select-String -Path index.html -Pattern 'BUILD_DATE =' | ForEach-Object { $_.Line.Trim() }
@@ -167,7 +167,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Stamp build date
-        run: sed -i "s/__BUILD_DATE__/$(date -u +%F)/" index.html
+        run: sed -i "s/__BUILD_DATE__/$(TZ=Asia/Shanghai date +%F)/" index.html
 
       - name: Download APK
         uses: actions/download-artifact@v4
