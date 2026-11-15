@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>风洞实验室 v2 · Stable Fluids</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; background: #080b12; color: #e6e9f2;
+    font: 14px/1.5 "Microsoft YaHei UI", system-ui, sans-serif; overflow: hidden;
+  }
+  aside {
+    width: 264px; flex: 0 0 264px; padding: 14px; overflow-y: auto;
+    background: #0d1119; border-right: 1px solid #1e2534;
+  }
+  aside h1 { font-size: 15px; margin: 0 0 2px; }
+  aside .sub { font-size: 11px; color: #6b7894; margin-bottom: 12px; }
+  .group { margin-bottom: 13px; }
+  .group > label { display: block; font-size: 12px; color: #94a2c0; margin-bottom: 5px; }
+  input[type=range] { width: 100%; }
+  .val { float: right; color: #5eead4; font-variant-numeric: tabular-nums; }
+  button {
+    font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+    border: 1px solid #232b3e; background: #151b28; color: #dbe2f3; width: 100%; margin-bottom: 7px;
+  }
+  button:hover { background: #1d2536; }
+  button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+  #drop {
+    border: 2px dashed #232b3e; border-radius: 10px; padding: 12px; text-align: center;
+    color: #6b7894; font-size: 12px; margin-bottom: 9px;
+  }
+  #drop.hi { border-color: #2563eb; color: #93c5fd; }
+  .seg { display: flex; flex-wrap: wrap; gap: 5px; }
+  .seg button { margin: 0; font-size: 12px; padding: 5px 0; width: calc(50% - 3px); }
+  .seg button.on { background: #2563eb; border-color: #2563eb; color: #fff; }
+  .hint { font-size: 11px; color: #566178; margin-top: 8px; line-height: 1.5; }
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #stage { flex: 1; display: grid; place-items: center; background: #05070d; min-height: 0; padding: 8px; }
+  #wrap { width: 100%; height: 100%; display: grid; place-items: center; }
+  #wrap > canvas { max-width: 100%; max-height: 100%; }
+  canvas { max-width: 100%; max-height: 100%; display: block; image-rendering: auto; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  .metabar { display: flex; align-items: center; gap: 14px; padding: 5px 12px;
+             border-top: 1px solid #161c28; }
+  #meta { flex: 1; min-width: 0; font-size: 11px; color: #566178;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .credit { display: flex; gap: 10px; flex: 0 0 auto; }
+  .credit a { color: #6b7894; display: inline-flex; transition: color .15s, transform .15s; }
+  .credit a:hover { color: #5eead4; transform: translateY(-1px); }
+  .credit svg { width: 18px; height: 18px; display: block; }
+</style>
+</head>
+<body>
+
+<aside>
+  <h1>风洞实验室 v2</h1>
+  <div class="sub">Stable Fluids（半拉格朗日 + 压力投影）</div>
+
+  <div id="drop">拖透明底 PNG 进来<br>或点下面</div>
+  <button id="btnPick" class="primary">选择图片</button>
+  <button id="btnDemo">内置形状（圆柱 / 翼型）</button>
+
+  <div class="group">
+    <label>风速 <span class="val" id="vSpeed">1.00</span></label>
+    <input type="range" id="speed" min="0.2" max="2.5" step="0.05" value="1">
+  </div>
+  <div class="group">
+    <label>黏性（越小越乱） <span class="val" id="vVisc">0.15</span></label>
+    <input type="range" id="visc" min="0" max="1" step="0.01" value="0.15">
+  </div>
+  <div class="group">
+    <label>涡量强度 <span class="val" id="vVort">12</span></label>
+    <input type="range" id="vort" min="0" max="25" step="1" value="10">
+  </div>
+  <div class="group">
+    <label>烟迹长度 <span class="val" id="vLife">1.0</span></label>
+    <input type="range" id="life" min="0.3" max="3" step="0.1" value="1">
+  </div>
+  <div class="group">
+    <label>分辨率 <span class="val" id="vRes">320×180</span></label>
+    <select id="res" style="width:100%;padding:6px;border-radius:8px;background:#151b28;color:#dbe2f3;border:1px solid #232b3e;font:inherit">
+      <option value="240x135">240 × 135（最快）</option>
+      <option value="320x180" selected>320 × 180（推荐）</option>
+      <option value="400x225">400 × 225（要性能）</option>
+      <option value="480x270">480 × 270（桌面）</option>
+      <option value="640x360">640 × 360（高）</option>
+      <option value="800x450">800 × 450（很高）</option>
+    </select>
+  </div>
+  <div class="group">
+    <label>画障碍物</label>
+    <div class="seg" id="tool">
+      <button data-t="none" class="on">关</button>
+      <button data-t="brush">画笔</button>
+      <button data-t="eraser">橡皮</button>
+      <button data-t="clear">清空手画</button>
+    </div>
+  </div>
+  <div class="group">
+    <label>笔刷半径 <span class="val" id="vBrush">4</span></label>
+    <input type="range" id="brush" min="1" max="14" step="1" value="4">
+  </div>
+  <div class="group">
+    <label>气动力（估算）</label>
+    <div id="forces" style="font-size:12px;color:#94a2c0;line-height:1.7;font-variant-numeric:tabular-nums">
+      升力系数 Cl：<b id="cl" style="color:#5eead4">—</b><br>
+      阻力系数 Cd：<b id="cd" style="color:#fbbf24">—</b>
+      <div style="font-size:11px;color:#566178;margin-top:4px">
+        尾流动量亏损法估算，量级可信、绝对值别当风洞数据
+      </div>
+    </div>
+  </div>
+  <div class="group">
+    <label>物体位置 X <span class="val" id="vPx">30%</span></label>
+    <input type="range" id="px" min="2" max="98" step="1" value="30">
+  </div>
+  <div class="group">
+    <label>物体位置 Y <span class="val" id="vPy">50%</span></label>
+    <input type="range" id="py" min="2" max="98" step="1" value="50">
+  </div>
+  <div class="group">
+    <label>物体大小 <span class="val" id="vPs">1.00×</span></label>
+    <input type="range" id="ps" min="15" max="300" step="5" value="100">
+  </div>
+  <div class="group">
+    <label>转角 <span class="val" id="vPa">0°</span></label>
+    <input type="range" id="pa" min="0" max="359" step="1" value="0">
+  </div>
+  <div class="group">
+    <label>亮度 <span class="val" id="vBright">0.70</span></label>
+    <input type="range" id="bright" min="0.2" max="2" step="0.05" value="0.7">
+  </div>
+  <div class="group">
+    <label>显示</label>
+    <div class="seg" id="mode">
+      <button data-m="stream" class="on">流线</button>
+      <button data-m="streak">脉线</button>
+      <button data-m="stripes">条纹烟</button>
+      <button data-m="curl">涡量</button>
+      <button data-m="speed">速度</button>
+      <button data-m="pressure">压强</button>
+    </div>
+  </div>
+  <button id="btnReset">重置流场</button>
+  <button id="btnRecenter">物体回到中间</button>
+  <button id="btnShot">保存这一帧</button>
+  <div class="hint">
+    半拉格朗日对流 + 20 次 Jacobi 投影 + 涡量约束。<br>
+    风从左边吹，物体 = 图片里不透明的像素。
+  </div>
+
+</aside>
+
+<main>
+  <div id="stage"><div id="wrap"><canvas id="cv"></canvas></div></div>
+  <div class="metabar">
+    <div id="meta">准备中…</div>
+    <div class="credit">
+      <a href="https://github.com/whalemiao/Wind-Tunnel-Laboratory" target="_blank" rel="noopener"
+         title="源码：github.com/whalemiao/Wind-Tunnel-Laboratory">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+      <a href="https://space.bilibili.com/3546600242678059" target="_blank" rel="noopener"
+         title="B 站：space.bilibili.com/3546600242678059">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linejoin="round" aria-hidden="true">
+          <rect x="2.7" y="6.7" width="18.6" height="13.6" rx="3.4"/>
+          <path d="M7.2 3.7 9.7 6.7M16.8 3.7 14.3 6.7" stroke-linecap="round"/>
+          <circle cx="8.7" cy="13.3" r="1.15" fill="currentColor" stroke="none"/>
+          <circle cx="15.3" cy="13.3" r="1.15" fill="currentColor" stroke="none"/>
+        </svg>
+      </a>
+    </div>
+  </div>
+</main>
+
+<input type="file" id="file" accept="image/*" hidden>
+
+<script>
+(() => {
+  /* ================= 参数 ================= */
+  const QS = new URLSearchParams(location.search);
+  const RES = QS.get('res') || '320x180';
+  let NX = parseInt(RES.split('x')[0], 10) || 320;
+  let NY = parseInt(RES.split('x')[1], 10) || 180;
+  const N = () => NX * NY;
+
+  let speed = parseFloat(QS.get('speed') || '1') || 1;   // 0.2~2.5
+  let visc  = parseFloat(QS.get('visc') || '0.15');      // 0~1
+  let vortF = parseFloat(QS.get('vort') || '12');        // 涡量约束强度
+  let life  = parseFloat(QS.get('life') || '1');         // 烟迹长度
+  let bright = parseFloat(QS.get('bright') || '0.7');    // 流线/粒子亮度倍数
+  let mode  = QS.get('mode') || 'stream';
+  let frameNo = 0;
+  const SHAPE = QS.get('shape') || 'circle';             // circle | airfoil | teardrop
+  const STILL = parseInt(QS.get('still') || '0', 10);    // >0：跑固定帧后出静帧
+
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d', { alpha: false });
+  const $ = (id) => document.getElementById(id);
+
+  /* ================= 场 ================= */
+  let u, v, u0, v0, p, div, curl, dye, solid, img;
+  let us, vs;          // 平滑后的速度场（仅用于流线积分，防止锯齿状抽动）
+  let RS = 2;          // 渲染倍率（画布 = 网格 × RS）
+  let fieldCv = null, fieldCtx = null;   // 标量场离屏画布
+  let smokeCv = null, smokeCtx = null;   // 烟的累积层
+  let srcImg = null;   // 用户上传的原图
+  let objGeom = null;  // 物体在网格里的尺寸 { w, h }，渲染时用原图按画布像素画
+  let maskImg = null;  // 图片贡献的实体掩码
+  let paint = null;    // 手画的实体（画笔=1，橡皮=0）
+  let tool = 'none';   // none | brush | eraser
+  let flowInited = false;  // 第一次建掩码要灌满均匀来流，之后拖动才不重置
+  let brush = 4;       // 笔刷半径（格子）
+  // 物体摆放：像真实风洞那样可以把模型挪来挪去、放大缩小、转个角度
+  let objX = parseFloat(QS.get('ox') || '0.30');
+  let objY = parseFloat(QS.get('oy') || '0.50');
+  let objScale = parseFloat(QS.get('scale') || '1.0');
+  let objAngle = parseFloat(QS.get('angle') || '0');
+
+  function alloc() {
+    const n = N();
+    u = new Float32Array(n); v = new Float32Array(n);
+    u0 = new Float32Array(n); v0 = new Float32Array(n);
+    p = new Float32Array(n); div = new Float32Array(n);
+    curl = new Float32Array(n); dye = new Float32Array(n);
+    solid = new Uint8Array(n);
+    us = new Float32Array(n); vs = new Float32Array(n);
+    maskImg = new Uint8Array(n); paint = new Uint8Array(n);
+    // 渲染分辨率 = 网格 × RS。网格负责物理，RS 负责"线看起来细不细"
+    // 渲染倍率 = 想要多少物理像素 / 网格宽。
+    // 原来写死 1500，宽屏 + 高分屏下会不够，导致导入的图被二次放大变糊。
+    const stageW = (document.getElementById('stage') || {}).clientWidth || 1000;
+    const dpr = window.devicePixelRatio || 1;
+    const targetW = Math.max(900, Math.min(2200, Math.round(stageW * dpr)));
+    RS = Math.max(1, Math.min(6, Math.round(targetW / NX)));
+    cv.width = NX * RS; cv.height = NY * RS;
+    ctx.setTransform(RS, 0, 0, RS, 0, 0);
+
+    // 标量场先画在网格分辨率上，再放大（开插值 → 平滑渐变，不是马赛克）
+    fieldCv = document.createElement('canvas');
+    fieldCv.width = NX; fieldCv.height = NY;
+    fieldCtx = fieldCv.getContext('2d');
+
+    // 烟的累积层：不清屏，只慢慢淡出 → 天然带"烟"的柔边和层次
+    smokeCv = document.createElement('canvas');
+    smokeCv.width = NX * RS; smokeCv.height = NY * RS;
+    smokeCtx = smokeCv.getContext('2d');
+    smokeCtx.setTransform(RS, 0, 0, RS, 0, 0);
+    smokeCtx.fillStyle = '#05070d';
+    smokeCtx.fillRect(0, 0, NX, NY);
+
+    fitCanvas();
+  }
+
+  /** 让画布在可用空间里尽量大（保持宽高比，不留黑边） */
+  function fitCanvas() {
+    const st = document.getElementById('stage');
+    if (!st) return;
+    const aw = Math.max(100, st.clientWidth - 16);
+    const ah = Math.max(80, st.clientHeight - 16);
+    const k = Math.min(aw / NX, ah / NY);
+    cv.style.width = Math.floor(NX * k) + 'px';
+    cv.style.height = Math.floor(NY * k) + 'px';
+  }
+  window.addEventListener('resize', () => fitCanvas());
+
+  const at = (x, y) => y * NX + x;
+  const clampCell = (x, y) => {
+    x = x < 0 ? 0 : (x > NX - 1 ? NX - 1 : x);
+    y = y < 0 ? 0 : (y > NY - 1 ? NY - 1 : y);
+    return y * NX + x;
+  };
+
+  /* 基准风速：格子/秒 */
+  const U0 = 52;
+
+  /* ================= 初始化 ================= */
+  function initFlow() {
+    u.fill(0); v.fill(0); p.fill(0); dye.fill(0);
+    // 均匀来流
+    for (let y = 0; y < NY; y++) {
+      for (let x = 0; x < NX; x++) {
+        const i = at(x, y);
+        if (!solid[i]) u[i] = U0 * speed;
+      }
+    }
+    seedDye();
+    particles.length = 0;
+  }
+
+  /** 重新铺一遍条纹染料（物体挪动后必须重播，否则旧位置会留一个"黑洞"） */
+  function seedDye() {
+    for (let y = 0; y < NY; y++) {
+      const band = Math.floor(y / 14) % 2;
+      for (let x = 0; x < NX; x++) dye[at(x, y)] = solid[at(x, y)] ? 0 : (band ? 1 : 0);
+    }
+  }
+
+  /* ================= 固体掩码 ================= */
+  function applyMask(alphaAt, resetFlow = true) {
+    solid.fill(0);
+    for (let y = 0; y < NY; y++) {
+      for (let x = 0; x < NX; x++) {
+        if (alphaAt(x, y) > 100) solid[at(x, y)] = 1;
+      }
+    }
+    // 膨胀一圈，避免气流从像素缝里钻
+    const cp = solid.slice();
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (cp[i]) continue;
+        if (cp[i - 1] || cp[i + 1] || cp[i - NX] || cp[i + NX]) solid[i] = 1;
+      }
+    }
+    // 进出口/上下边界不算固体
+    for (let y = 0; y < NY; y++) { solid[at(0, y)] = 0; solid[at(NX - 1, y)] = 0; }
+    for (let x = 0; x < NX; x++) { solid[at(x, 0)] = 0; solid[at(x, NY - 1)] = 0; }
+    if (maskImg) maskImg.set(solid);
+    mergePaint();
+    if (resetFlow) initFlow();
+  }
+
+  /** 图片掩码 + 手画掩码 合并；只改 solid，不重置流场（涂抹时流场要连续） */
+  function mergePaint() {
+    if (!maskImg) return;
+    for (let i = 0, n = NX * NY; i < n; i++) solid[i] = maskImg[i] | paint[i];
+    for (let y = 0; y < NY; y++) { solid[at(0, y)] = 0; solid[at(NX - 1, y)] = 0; }
+    for (let x = 0; x < NX; x++) { solid[at(x, 0)] = 0; solid[at(x, NY - 1)] = 0; }
+  }
+
+  /** 在 (gx,gy) 处涂抹/擦除 */
+  function stamp(gx, gy) {
+    const r = brush;
+    const v = tool === 'brush' ? 1 : 0;
+    for (let y = Math.max(1, gy - r); y <= Math.min(NY - 2, gy + r); y++) {
+      for (let x = Math.max(1, gx - r); x <= Math.min(NX - 2, gx + r); x++) {
+        if ((x - gx) * (x - gx) + (y - gy) * (y - gy) <= r * r) paint[at(x, y)] = v;
+      }
+    }
+    mergePaint();
+    seedDye();
+    if (!flowInited) { initFlow(); flowInited = true; }
+    resetSmoke();   // 否则涂抹处会留下旧流线，看起来像重影
+  }
+
+  /* ================= 半拉格朗日对流 ================= */
+  function bilerp(f, x, y) {
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const fx = x - x0, fy = y - y0;
+    const i00 = clampCell(x0, y0), i10 = clampCell(x0 + 1, y0);
+    const i01 = clampCell(x0, y0 + 1), i11 = clampCell(x0 + 1, y0 + 1);
+    return (f[i00] * (1 - fx) + f[i10] * fx) * (1 - fy) +
+           (f[i01] * (1 - fx) + f[i11] * fx) * fy;
+  }
+
+  function advect(dst, src, dt) {
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) { dst[i] = 0; continue; }
+        const px = x - dt * u[i];
+        const py = y - dt * v[i];
+        dst[i] = bilerp(src, px, py);
+      }
+    }
+  }
+
+  /* ================= 投影（去散度） ================= */
+  function project(iters) {
+    const h = 1;   // 格子间距
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) { div[i] = 0; p[i] = 0; continue; }
+        const l = solid[i - 1] ? u[i] : u[i - 1];
+        const r = solid[i + 1] ? u[i] : u[i + 1];
+        const b = solid[i - NX] ? v[i] : v[i - NX];
+        const t = solid[i + NX] ? v[i] : v[i + NX];
+        div[i] = -0.5 * h * ((r - l) + (t - b));
+        p[i] = 0;
+      }
+    }
+    for (let k = 0; k < iters; k++) {
+      for (let y = 1; y < NY - 1; y++) {
+        for (let x = 1; x < NX - 1; x++) {
+          const i = at(x, y);
+          if (solid[i]) continue;
+          const l = solid[i - 1] ? p[i] : p[i - 1];
+          const r = solid[i + 1] ? p[i] : p[i + 1];
+          const b = solid[i - NX] ? p[i] : p[i - NX];
+          const t = solid[i + NX] ? p[i] : p[i + NX];
+          p[i] = (div[i] + l + r + b + t) * 0.25;
+        }
+      }
+    }
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) continue;
+        const l = solid[i - 1] ? p[i] : p[i - 1];
+        const r = solid[i + 1] ? p[i] : p[i + 1];
+        const b = solid[i - NX] ? p[i] : p[i - NX];
+        const t = solid[i + NX] ? p[i] : p[i + NX];
+        u[i] -= 0.5 * (r - l) / h;
+        v[i] -= 0.5 * (t - b) / h;
+      }
+    }
+  }
+
+  /* ================= 涡量 + 涡量约束 ================= */
+  function computeCurl() {
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) { curl[i] = 0; continue; }
+        curl[i] = 0.5 * ((v[i + 1] - v[i - 1]) - (u[i + NX] - u[i - NX]));
+      }
+    }
+  }
+
+  function vorticityConfinement(dt) {
+    if (vortF <= 0) return;
+    for (let y = 2; y < NY - 2; y++) {
+      for (let x = 2; x < NX - 2; x++) {
+        const i = at(x, y);
+        if (solid[i]) continue;
+        const gx = Math.abs(curl[i + 1]) - Math.abs(curl[i - 1]);
+        const gy = Math.abs(curl[i + NX]) - Math.abs(curl[i - NX]);
+        const len = Math.hypot(gx, gy) + 1e-5;
+        const nx = gx / len, ny = gy / len;
+        u[i] += vortF * dt * (ny * curl[i]);
+        v[i] += vortF * dt * (-nx * curl[i]);
+      }
+    }
+  }
+
+  /* ================= 气动力（尾流动量亏损法） ================= */
+  /*
+   * 为什么不用"对固体表面压力积分"：
+   *   Stam 求解器里的 p 是"伪压力"（只保证梯度正确，绝对值没有物理单位），
+   *   直接积分出来的数完全没有量级意义（实测算出 Cd=1245）。
+   *
+   * 改用风洞实验里真实在用的做法 —— 在物体下游量一条竖线上的动量亏损：
+   *   F_drag ≈ ∫ ρ·u·(U − u) dy
+   *   F_lift ≈ ∫ ρ·u·v      dy
+   * 再除以 0.5·ρ·U²·H（H = 物体的迎风高度）得到系数。
+   * 这样得到的 Cd 在 0.5~2 量级，和教科书对得上。
+   */
+  let clNow = 0, cdNow = 0;
+  function computeForces() {
+    const U = U0 * speed;
+    if (U <= 0) { clNow = 0; cdNow = 0; return; }
+
+    // 物体在竖直方向占多少格（迎风高度）
+    let minY = NY, maxY = 0, minX = NX, maxX = 0;
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        if (solid[at(x, y)]) {
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+    }
+    const H = Math.max(4, maxY - minY + 1);
+    if (maxX <= minX) { clNow = 0; cdNow = 0; return; }
+
+    // 测量线：物体后缘再往下游一点（避开物体本身和近尾流奇点）
+    const xw = Math.min(NX - 3, Math.max(minX + 2, maxX + Math.round(H * 0.6)));
+
+    let drag = 0, lift = 0;
+    for (let y = 1; y < NY - 1; y++) {
+      const i = at(xw, y);
+      if (solid[i]) continue;
+      const uu = us[i] || 0, vv = vs[i] || 0;
+      drag += uu * (U - uu);
+      lift += uu * vv;
+    }
+    const ref = 0.5 * U * U * H;
+    cdNow = drag / ref;
+    clNow = lift / ref;
+  }
+
+  /* ================= 边界 ================= */
+  function applyBoundary() {
+    const U = U0 * speed;
+    for (let y = 1; y < NY - 1; y++) {
+      const i = at(0, y);
+      if (!solid[i]) { u[i] = U; v[i] = 0; }
+      const r = at(NX - 1, y);
+      const a = at(NX - 2, y);
+      u[r] = u[a]; v[r] = v[a];
+    }
+    for (let x = 0; x < NX; x++) {
+      u[at(x, 0)] = u[at(x, 1)]; v[at(x, 0)] = 0;
+      u[at(x, NY - 1)] = u[at(x, NY - 2)]; v[at(x, NY - 1)] = 0;
+    }
+    // 固体内部速度为 0；贴着固体的格子加摩擦
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) { u[i] = 0; v[i] = 0; continue; }
+        if (solid[i - 1] || solid[i + 1] || solid[i - NX] || solid[i + NX]) {
+          const f = 0.96 - 0.03 * (1 - visc);
+          u[i] *= f; v[i] *= f;
+        }
+      }
+    }
+  }
+
+  /* ================= 推进一帧 ================= */
+  const dt = 1 / 60;
+  function advance() {
+    computeCurl();
+    vorticityConfinement(dt);
+
+    // 对流（半拉格朗日）
+    u0.set(u); v0.set(v);
+    advect(u, u0, dt);
+    advect(v, v0, dt);
+
+    // 投影
+    project(20);
+
+    // 边界
+    applyBoundary();
+
+    // 染料对流（条纹烟）
+    u0.set(dye);
+    // 用速度场推进染料
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) { dye[i] = 0; continue; }
+        const px = x - dt * u[i];
+        const py = y - dt * v[i];
+        dye[i] = bilerp(u0, px, py) * 0.998;
+      }
+    }
+    // 入口持续注入条纹
+    for (let y = 1; y < NY - 1; y++) {
+      const band = Math.floor(y / 14) % 2;
+      dye[at(0, y)] = band ? 1 : 0;
+    }
+  }
+
+  /* ================= 粒子（脉线用） ================= */
+  const particles = [];
+
+  function spawnParticles() {
+    const want = 8;
+    for (let k = 0; k < want; k++) {
+      const y = 2 + Math.random() * (NY - 4);
+      particles.push({
+        x: 1 + Math.random(),
+        y,
+        age: 0,
+        max: (1.2 + Math.random() * 1.6) * life
+      });
+    }
+    if (particles.length > 4000) particles.splice(0, particles.length - 4000);
+  }
+
+  function stepParticles() {
+    for (let k = particles.length - 1; k >= 0; k--) {
+      const q = particles[k];
+      const i = clampCell(q.x | 0, q.y | 0);
+      if (solid[i]) { particles.splice(k, 1); continue; }
+      q.x += u[i] * dt;
+      q.y += v[i] * dt;
+      q.age += dt;
+      if (q.age > q.max || q.x > NX - 2 || q.y < 1 || q.y > NY - 2) particles.splice(k, 1);
+    }
+  }
+
+  /* ================= 渲染 ================= */
+  /**
+   * 流线用的速度场：空间（5×5）+ 时间（低通）双重平滑。
+   * 为什么两层都要：
+   *   · 空间平滑去掉格子尺度的毛刺（涡量约束会放大它）
+   *   · 时间低通去掉"每帧方向微微不同"造成的抖动 —— 这才是"抽搐"的主因
+   * 这个场只用于画线，物理仍用原始 u/v。
+   */
+  const _tu = new Float32Array(1);
+  function smoothVel() {
+    const R = 3;   // 7×7（越快越乱，给足平滑）
+    // 注意：要覆盖到 1..NX-2（包括边界那一圈），否则种子点读到 0 会立刻断线
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) { us[i] = 0; vs[i] = 0; continue; }
+        let su = 0, sv = 0, n = 0;
+        for (let dy = -R; dy <= R; dy++) {
+          for (let dx = -R; dx <= R; dx++) {
+            const xx = x + dx, yy = y + dy;
+            if (xx < 0 || xx >= NX || yy < 0 || yy >= NY) continue;
+            const j = yy * NX + xx;
+            if (solid[j]) continue;
+            su += u[j]; sv += v[j]; n++;
+          }
+        }
+        if (!n) { us[i] = 0; vs[i] = 0; continue; }
+        const nu = su / n, nv = sv / n;
+        // 时间低通：0.72 旧 + 0.28 新（越小越稳、越大越跟手）
+        us[i] = us[i] * 0.85 + nu * 0.15;
+        vs[i] = vs[i] * 0.85 + nv * 0.15;
+      }
+    }
+  }
+
+  function sampleUF(x, y, out) {
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const fx = x - x0, fy = y - y0;
+    const i00 = clampCell(x0, y0), i10 = clampCell(x0 + 1, y0);
+    const i01 = clampCell(x0, y0 + 1), i11 = clampCell(x0 + 1, y0 + 1);
+    out[0] = (us[i00] * (1 - fx) + us[i10] * fx) * (1 - fy) +
+             (us[i01] * (1 - fx) + us[i11] * fx) * fy;
+    out[1] = (vs[i00] * (1 - fx) + vs[i10] * fx) * (1 - fy) +
+             (vs[i01] * (1 - fx) + vs[i11] * fx) * fy;
+  }
+
+  const seedsRows = 30;
+  const _s1 = [0, 0], _s2 = [0, 0];
+  function drawStreamlines(g, alpha) {
+    const Hh = 0.7;                       // 步长更小，曲线更顺
+    const MAXSTEP = Math.ceil(NX * 1.8 / Hh);
+    // 烟感关键：线细一点、透明度低一点、加辉光 → 叠起来像烟，不像钢笔线
+    g.lineWidth = 0.8;
+    g.lineJoin = 'round';
+    g.lineCap = 'round';
+    g.shadowColor = 'rgba(125,211,252,0.65)';
+    g.shadowBlur = 4;
+
+    for (let s = 0; s < seedsRows; s++) {
+      let x = 3, y = 2.5 + s * (NY - 5) / (seedsRows - 1);
+      if (solid[clampCell(x | 0, y | 0)]) continue;
+      g.beginPath();
+      g.moveTo(x, y);
+      let px = x, py = y;
+      let _lastDx = 1, _lastDy = 0;
+      for (let k = 0; k < MAXSTEP; k++) {
+        // RK2（中点法）：先取当前点速度，走半步再取一次，能明显减少"折线感"
+        sampleUF(x, y, _s1);
+        let sp1 = Math.hypot(_s1[0], _s1[1]);
+        if (sp1 < 0.3) { window.__b_sp = (window.__b_sp || 0) + 1; break; }
+        sampleUF(x + (_s1[0] / sp1) * Hh * 0.5, y + (_s1[1] / sp1) * Hh * 0.5, _s2);
+        let sp2 = Math.hypot(_s2[0], _s2[1]);
+        if (sp2 < 0.3) break;
+        // 限制每步转角：速度场再抖，线本身也不会拐出折角
+        let dx = (_s2[0] / sp2) * Hh, dy = (_s2[1] / sp2) * Hh;
+        if (k > 0) {
+          const maxTurn = 0.07;   // 弧度，≈4°（越严越不容易出现折角）
+          const a0 = Math.atan2(_lastDy, _lastDx);
+          const a1 = Math.atan2(dy, dx);
+          let d = a1 - a0;
+          while (d > Math.PI) d -= Math.PI * 2;
+          while (d < -Math.PI) d += Math.PI * 2;
+          const cl = Math.max(-maxTurn, Math.min(maxTurn, d));
+          const a = a0 + cl, len = Math.hypot(dx, dy);
+          dx = Math.cos(a) * len; dy = Math.sin(a) * len;
+        }
+        _lastDx = dx; _lastDy = dy;
+        x += dx; y += dy;
+        if (x < 1 || x > NX - 1 || y < 1 || y > NY - 2) { window.__b_bd = (window.__b_bd || 0) + 1; break; }
+        if (solid[clampCell(x | 0, y | 0)]) { window.__b_sd = (window.__b_sd || 0) + 1; break; }
+        g.lineTo(x, y);
+        window.__pts = (window.__pts || 0) + 1;
+      }
+      const t = s / (seedsRows - 1);
+      g.strokeStyle = `rgba(${(90 + 50 * t) | 0},${(200 - 30 * t) | 0},252,${alpha})`;
+      g.stroke();
+    }
+    g.shadowBlur = 0;
+  }
+
+  function drawParticles(g, alpha) {
+    for (const q of particles) {
+      const i = clampCell(q.x | 0, q.y | 0);
+      const sp = Math.hypot(u[i], v[i]) / (U0 * speed || 1);
+      const gg = 160 + 80 * Math.min(1, sp);
+      g.fillStyle = `rgba(140,${gg | 0},255,${alpha})`;
+      g.fillRect(q.x, q.y, 1.3, 1.3);
+    }
+  }
+
+  function drawField() {
+    const id = fieldCtx.createImageData(NX, NY);
+    const d = id.data;
+    for (let i = 0, n = NX * NY; i < n; i++) {
+      let r, g, b;
+      if (solid[i]) { r = 26; g = 30; b = 42; }
+      else if (mode === 'stripes') {
+        const t = Math.max(0, Math.min(1, dye[i]));
+        // 蓝青 → 白，模仿风洞里被拉长的烟带
+        r = 30 + 200 * t; g = 90 + 165 * t; b = 140 + 115 * t;
+      } else if (mode === 'curl') {
+        const t = Math.max(-1, Math.min(1, curl[i] / 40));
+        if (t > 0) { r = 30 + 225 * t; g = 40 + 60 * t; b = 60 + 40 * (1 - t); }
+        else { const a = -t; r = 30 + 30 * (1 - a); g = 50 + 120 * a; b = 90 + 165 * a; }
+      } else if (mode === 'speed') {
+        const t = Math.min(1, Math.hypot(u[i], v[i]) / (U0 * speed * 1.6));
+        r = 30 + 225 * t; g = 70 + 150 * t * t; b = 210 - 120 * t;
+      } else { // pressure
+        const t = Math.min(1, Math.max(0, p[i] * 0.6 + 0.5));
+        r = 60 + 195 * t; g = 90 + 60 * t; b = 210 - 150 * t;
+      }
+      const q = i * 4;
+      d[q] = r; d[q + 1] = g; d[q + 2] = b; d[q + 3] = 255;
+    }
+    fieldCtx.putImageData(id, 0, 0);
+    // 关键：放大时开启平滑，得到渐变而不是马赛克
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(fieldCv, 0, 0, NX, NY);
+  }
+
+  /**
+   * 直接拿「原图」在画布像素坐标系里画物体 —— 不经过任何中间缩放，
+   * 所以 1200×675 的图显示出来就是 1200 宽级别的清晰度。
+   */
+  function drawObject() {
+    if (!srcImg || !objGeom) return;
+    const k = RS;                       // 画布像素 / 网格单元
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // 切到物理像素坐标
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.globalAlpha = 0.95;
+    ctx.translate(objX * NX * k, objY * NY * k);
+    ctx.rotate(objAngle * Math.PI / 180);
+    ctx.drawImage(srcImg, -objGeom.w / 2 * k, -objGeom.h / 2 * k,
+                  objGeom.w * k, objGeom.h * k);
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  function render(fade) {
+    if (mode === 'stream') {
+      // 累积层：只淡出一部分，不清零 —— 多次叠加后就有烟的层次和柔边
+      smokeCtx.globalCompositeOperation = 'source-over';
+      // 拖动时把淡出加快（0.06 → 0.22）：既不留下明显重影，也不会把轨迹整片抹掉
+      smokeCtx.fillStyle = dragging ? 'rgba(5,7,13,0.22)' : 'rgba(5,7,13,0.06)';
+      smokeCtx.fillRect(0, 0, NX, NY);
+      smokeCtx.globalCompositeOperation = 'lighter';
+      drawStreamlines(smokeCtx, 0.13 * bright);
+
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#05070d'; ctx.fillRect(0, 0, NX, NY);
+      ctx.drawImage(smokeCv, 0, 0, NX, NY);
+    } else if (mode === 'streak') {
+      // 和流线一样分层：粒子只往累积层里画，主画布每帧重铺背景 + 物体
+      smokeCtx.globalCompositeOperation = 'source-over';
+      smokeCtx.fillStyle = `rgba(5,7,13,${0.035})`;
+      smokeCtx.fillRect(0, 0, NX, NY);
+      smokeCtx.globalCompositeOperation = 'lighter';
+      drawParticles(smokeCtx, 0.25 * bright);
+
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#05070d';
+      ctx.fillRect(0, 0, NX, NY);
+      ctx.drawImage(smokeCv, 0, 0, NX, NY);
+    } else {
+      drawField();
+      if (mode === 'curl') {
+        ctx.globalAlpha = 0.35;
+        drawStreamlines(ctx, 0.5 * bright);
+        ctx.globalAlpha = 1;
+      }
+    }
+    // 入口提示
+    ctx.fillStyle = 'rgba(94,234,212,0.14)';
+    ctx.fillRect(0, 0, 1, NY);
+    drawObject();
+
+    // 拖动时给个虚线框：让"可拖区域"和实际位置一眼对得上
+    if (dragging && objGeom) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.strokeStyle = 'rgba(94,234,212,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 5]);
+      ctx.translate(objX * NX * RS, objY * NY * RS);
+      ctx.rotate(objAngle * Math.PI / 180);
+      ctx.strokeRect(-objGeom.w / 2 * RS, -objGeom.h / 2 * RS,
+                     objGeom.w * RS, objGeom.h * RS);
+      ctx.restore();
+    }
+  }
+
+  /* ================= 内置形状 ================= */
+  function makeDemo() {
+    const c = document.createElement('canvas');
+    c.width = NX; c.height = NY;
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, NX, NY);
+    g.fillStyle = '#e2e8f0';
+    const cx = NX * 0.28, cy = NY * 0.5, R = NY * 0.10;
+    const SH = window.__shape || 'circle';
+    if (SH === 'airfoil') {
+      g.beginPath();
+      g.ellipse(cx, cy, R * 3.0, R * 0.42, -0.10, 0, Math.PI * 2);
+      g.fill();
+    } else if (SH === 'teardrop') {
+      g.beginPath();
+      g.arc(cx, cy, R, Math.PI * 0.5, Math.PI * 1.5);
+      g.lineTo(cx + R * 3, cy);
+      g.closePath();
+      g.fill();
+    } else {
+      g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.fill();
+    }
+    return c;
+  }
+
+  /** 把 source 画布按 objX/objY/objScale/objAngle 摆到网格画布上，再取 alpha 当掩码 */
+  function rebuildObject() {
+    if (!srcImg) return;
+    const c = document.createElement('canvas');
+    c.width = NX; c.height = NY;
+    const g = c.getContext('2d');
+    g.clearRect(0, 0, NX, NY);
+
+    // 等比缩放到网格（长边占 85%）
+    const fit = Math.min(NX * 0.9 / srcImg.width, NY * 0.9 / srcImg.height);
+    const w = srcImg.width * fit * objScale;
+    const h = srcImg.height * fit * objScale;
+
+    g.save();
+    g.translate(objX * NX, objY * NY);
+    g.rotate(objAngle * Math.PI / 180);
+    g.drawImage(srcImg, -w / 2, -h / 2, w, h);
+    g.restore();
+
+    // 只把「中心点」限制在画布内：大图允许探出去（想完整看就缩小），
+    // 否则一张宽图会把可拖动范围压成中间一窄条
+    objX = Math.min(0.98, Math.max(0.02, objX));
+    objY = Math.min(0.98, Math.max(0.02, objY));
+
+    // 只存"摆好位置后的网格尺寸几何参数"，渲染时用原图直接画（见 drawObject）
+    objGeom = { w, h };
+    img = c;
+
+    const d = g.getImageData(0, 0, NX, NY).data;
+    // 第一次：必须初始化流场（全场灌满均匀来流）
+    // 之后：只更新掩码，保持流场连续（拖动才不卡）
+    const needInit = !flowInited;
+    applyMask((x, y) => d[((y | 0) * NX + (x | 0)) * 4 + 3], needInit);
+    flowInited = true;
+    // 不在这里清烟：拖动时靠"加速淡出"消化旧轨迹，
+    // 整片 resetSmoke 会把已经画好的轨迹也一起抹掉（用户反馈"轨迹失踪"）
+  }
+
+  /** 把烟的累积层擦回背景色 */
+  function resetSmoke() {
+    if (!smokeCtx) return;
+    smokeCtx.save();
+    smokeCtx.setTransform(1, 0, 0, 1, 0, 0);
+    smokeCtx.globalCompositeOperation = 'source-over';
+    smokeCtx.fillStyle = '#05070d';
+    smokeCtx.fillRect(0, 0, smokeCv.width, smokeCv.height);
+    smokeCtx.restore();
+  }
+
+  function loadFromCanvas(c) {
+    srcImg = c;
+    rebuildObject();
+  }
+
+  /** 画一个内置形状并应用（同时把物体摆到默认位置） */
+  function drawBuiltin(shape) {
+    window.__shape = shape;
+    if (!QS.has('ox')) objX = 0.30;
+    if (!QS.has('oy')) objY = 0.50;
+    if (!QS.has('scale')) objScale = 1.0;
+    if (!QS.has('angle')) objAngle = 0;
+    const c = makeDemo();
+    loadFromCanvas(c);
+    syncObjUI();
+    $('meta').textContent = `内置形状：${({ circle: '圆柱', airfoil: '翼型', teardrop: '水滴' })[shape]} · 网格 ${NX}×${NY}`;
+  }
+
+  /** 静帧模式下图片可能是异步加载的，加载完要补渲染 */
+  function rerenderIfStill() {
+    if (!(STILL > 0)) return;
+    const need = STILL;
+    for (let k = 0; k < need; k++) { advance(); spawnParticles(); stepParticles(); }
+    computeCurl();
+    for (let k = 0; k < 12; k++) smoothVel();
+    computeForces();
+    for (let k = 0; k < 6; k++) render(0.03);
+  }
+
+  /** 从 URL 加载图片（?img=test.png） */
+  function useImageURL(url) {
+    const im = new Image();
+    im.crossOrigin = 'anonymous';
+    im.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = im.naturalWidth; c.height = im.naturalHeight;
+      c.getContext('2d').drawImage(im, 0, 0);
+      loadFromCanvas(c);
+      $('meta').textContent = `已加载 ${url} · 原图 ${im.naturalWidth}×${im.naturalHeight}`;
+      rerenderIfStill();
+    };
+    im.onerror = () => { $('meta').textContent = '图片加载失败: ' + url; };
+    im.src = url;
+  }
+
+  function useImageFile(file) {
+    const im = new Image();
+    im.onload = () => {
+      // 等比缩放到网格，左侧留出上游、右侧留尾流
+      const c = document.createElement('canvas');
+      c.width = NX; c.height = NY;
+      const g = c.getContext('2d');
+      const s = Math.min(NX * 0.55 / im.naturalWidth, NY * 0.85 / im.naturalHeight);
+      const w = im.naturalWidth * s, h = im.naturalHeight * s;
+      g.drawImage(im, NX * 0.3 - w / 2, (NY - h) / 2, w, h);
+      // 上层显示用同一张
+      img = document.createElement('canvas');
+      img.width = NX; img.height = NY;
+      img.getContext('2d').drawImage(c, 0, 0);
+      loadFromCanvas(c);
+      $('meta').textContent = `${file.name} · 原图 ${im.naturalWidth}×${im.naturalHeight} · 不透明像素 = 实体`;
+      rerenderIfStill();
+    };
+    im.src = URL.createObjectURL(file);
+  }
+
+  /* ================= UI ================= */
+  $('btnPick').onclick = () => $('file').click();
+  $('file').onchange = (e) => { if (e.target.files[0]) useImageFile(e.target.files[0]); e.target.value = ''; };
+  const SHAPES = ['circle', 'airfoil', 'teardrop'];
+  let shapeIdx = Math.max(0, SHAPES.indexOf(SHAPE));
+  $('btnDemo').onclick = () => {
+    shapeIdx = (shapeIdx + 1) % SHAPES.length;
+    drawBuiltin(SHAPES[shapeIdx]);
+    $('btnDemo').textContent = '内置形状：' + ({ circle: '圆柱', airfoil: '翼型', teardrop: '水滴' })[SHAPES[shapeIdx]] + '（点击切换）';
+  };
+  $('btnReset').onclick = () => { initFlow(); flowInited = true; };
+  $('btnRecenter').onclick = () => { objX = 0.30; objY = 0.50; objScale = 1.0; objAngle = 0; rebuildObject(); syncObjUI(); };
+  $('btnShot').onclick = () => {
+    const a = document.createElement('a');
+    a.download = 'windtunnel-' + Date.now() + '.png';
+    a.href = cv.toDataURL('image/png');
+    a.click();
+  };
+  $('speed').oninput = (e) => { speed = +e.target.value; $('vSpeed').textContent = speed.toFixed(2); };
+  $('visc').oninput  = (e) => { visc = +e.target.value;  $('vVisc').textContent = visc.toFixed(2); };
+  $('vort').oninput  = (e) => { vortF = +e.target.value; $('vVort').textContent = vortF.toFixed(0); };
+  $('life').oninput  = (e) => { life = +e.target.value;  $('vLife').textContent = life.toFixed(1); };
+  $('mode').onclick = (e) => {
+    const b = e.target.closest('button[data-m]');
+    if (!b) return;
+    mode = b.dataset.m;
+    [...$('mode').children].forEach(x => x.classList.toggle('on', x === b));
+  };
+  $('tool').onclick = (e) => {
+    const b = e.target.closest('button[data-t]');
+    if (!b) return;
+    const t = b.dataset.t;
+    if (t === 'clear') {
+      paint.fill(0); mergePaint();
+      $('meta').textContent = '已清空手画障碍物';
+      return;
+    }
+    tool = t;
+    [...$('tool').children].forEach(x => x.classList.toggle('on', x === b));
+    $('meta').textContent = t === 'none' ? '拖动可移动物体' : (t === 'brush' ? '在画布上涂抹 = 加实体' : '在画布上涂抹 = 擦除实体');
+  };
+  $('brush').oninput = (e) => { brush = +e.target.value; $('vBrush').textContent = brush; };
+  $('bright').oninput = (e) => { bright = +e.target.value; $('vBright').textContent = bright.toFixed(2); };
+
+  $('px').oninput = (e) => { objX = +e.target.value / 100; rebuildObject(); syncObjUI(); };
+  $('py').oninput = (e) => { objY = +e.target.value / 100; rebuildObject(); syncObjUI(); };
+  $('ps').oninput = (e) => { objScale = +e.target.value / 100; rebuildObject(); syncObjUI(); };
+  $('pa').oninput = (e) => { objAngle = +e.target.value; rebuildObject(); syncObjUI(); };
+  $('res').onchange = (e) => {
+    const [a, b] = e.target.value.split('x').map(Number);
+    setResolution(a, b);
+  };
+
+  /** 换网格尺寸但不重载：重新分配数组 → 重建掩码 → 保持物体位置/参数 */
+  function setResolution(nx, ny) {
+    NX = nx; NY = ny;
+    alloc();                       // 重新分配所有场 + 离屏画布
+    flowInited = false;            // 新网格需要重新灌来流
+    if (srcImg) rebuildObject();   // 从原图重建掩码（不是回到默认形状）
+    else { window.__shape = window.__shape || 'circle'; drawBuiltin(window.__shape); }
+    paint.fill(0);
+    fitCanvas();
+    $('vRes').textContent = NX + '×' + NY;
+    $('meta').textContent = `已切到 ${NX}×${NY} · 物体和参数都保留了`;
+  }
+
+  /* ---- 直接在画布上摆放物体（像真实风洞那样） ---- */
+  let dragging = false, dragStart = null;
+  function toGrid(e) {
+    const r = cv.getBoundingClientRect();
+    return {
+      x: ((e.clientX - r.left) / r.width) * NX,
+      y: ((e.clientY - r.top) / r.height) * NY
+    };
+  }
+  cv.addEventListener('pointerdown', (e) => {
+    if (tool !== 'none') {
+      dragging = true;
+      const gp = toGrid(e);
+      stamp(Math.round(gp.x), Math.round(gp.y));
+      cv.setPointerCapture(e.pointerId);
+      return;
+    }
+    if (!srcImg) return;
+    dragging = true;
+    dragStart = Object.assign(toGrid(e), { ox: objX, oy: objY });
+    cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (tool !== 'none' && dragging) {
+      const gp = toGrid(e);
+      stamp(Math.round(gp.x), Math.round(gp.y));
+      return;
+    }
+    if (!dragging) return;
+    const g = toGrid(e);
+    objX = Math.max(0.02, Math.min(0.98, dragStart.ox + (g.x - dragStart.x) / NX));
+    objY = Math.max(0.02, Math.min(0.98, dragStart.oy + (g.y - dragStart.y) / NY));
+    rebuildObject();
+    syncObjUI();
+  });
+  cv.addEventListener('pointerup', () => {
+    dragging = false;
+    seedDye();       // 物体定下来了，重播条纹，清掉旧位置的洞
+    resetSmoke();    // 顺手清掉拖动过程中的残影
+  });
+  cv.addEventListener('wheel', (e) => {
+    if (!srcImg) return;
+    e.preventDefault();
+    if (e.shiftKey) {
+      objAngle = (objAngle + (e.deltaY > 0 ? 5 : -5) + 360) % 360;
+    } else {
+      objScale = Math.max(0.15, Math.min(3, objScale * (e.deltaY > 0 ? 0.94 : 1.06)));
+    }
+    rebuildObject();
+    syncObjUI();
+  }, { passive: false });
+
+  function syncObjUI() {
+    if ($('px')) { $('px').value = objX * 100; $('vPx').textContent = (objX * 100).toFixed(0) + '%'; }
+    if ($('py')) { $('py').value = objY * 100; $('vPy').textContent = (objY * 100).toFixed(0) + '%'; }
+    if ($('ps')) { $('ps').value = objScale * 100; $('vPs').textContent = objScale.toFixed(2) + '×'; }
+    if ($('pa')) { $('pa').value = objAngle; $('vPa').textContent = objAngle.toFixed(0) + '°'; }
+  }
+
+  ['dragenter', 'dragover'].forEach(ev => document.body.addEventListener(ev, (e) => {
+    e.preventDefault(); $('drop').classList.add('hi');
+  }));
+  ['dragleave', 'drop'].forEach(ev => document.body.addEventListener(ev, (e) => {
+    e.preventDefault(); $('drop').classList.remove('hi');
+  }));
+  document.body.addEventListener('drop', (e) => {
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) useImageFile(f);
+  });
+
+  /* ================= 启动 ================= */
+  alloc();
+  {
+    window.__shape = SHAPE;          // 修 bug：启动时没把 URL 里的形状传进去，永远是圆柱
+    const c = makeDemo();
+    img = c;
+    loadFromCanvas(c);
+  }
+  // UI 反映参数
+  $('speed').value = speed; $('vSpeed').textContent = speed.toFixed(2);
+  $('visc').value = visc;   $('vVisc').textContent = visc.toFixed(2);
+  $('vort').value = vortF;  $('vVort').textContent = vortF.toFixed(0);
+  $('life').value = life;   $('vLife').textContent = life.toFixed(1);
+  $('bright').value = bright; $('vBright').textContent = bright.toFixed(2);
+  $('vRes').textContent = NX + '×' + NY;
+  [...$('mode').children].forEach(b => b.classList.toggle('on', b.dataset.m === mode));
+  $('btnDemo').textContent = '内置形状：' + ({ circle: '圆柱', airfoil: '翼型', teardrop: '水滴' })[SHAPE] + '（点击切换）';
+  syncObjUI();
+  $('res').value = NX + 'x' + NY;   // 让下拉框反映真实分辨率
+  $('meta').textContent = `网格 ${NX}×${NY} · ${mode} · 形状 ${SHAPE} · 风速 ${speed.toFixed(2)}`;
+
+  if (QS.get('img')) useImageURL(QS.get('img'));
+
+  if (STILL > 0) {
+    for (let k = 0; k < STILL; k++) {
+      advance();
+      spawnParticles();
+      stepParticles();
+    }
+    computeCurl();
+    // 时间低通要迭代几次才收敛；静帧只调一次的话 us ≈ 0.15·u，线会几乎看不见
+    for (let k = 0; k < 12; k++) smoothVel();
+    computeForces();
+    {
+      const clEl = $('cl'), cdEl = $('cd');
+      if (clEl) clEl.textContent = clNow.toFixed(2);
+      if (cdEl) cdEl.textContent = cdNow.toFixed(2);
+    }
+    // 动画里烟是靠"多帧累积"变亮的；静帧只画一次会很暗，所以叠 8 次
+    for (let k = 0; k < 6; k++) render(0.03);
+    $('meta').textContent += ` · 静帧（跑了 ${STILL} 帧）`;
+    if (QS.has('dbg')) {
+      let dmax = 0, umax = 0, nz = 0;
+      for (let i = 0, n = NX * NY; i < n; i++) {
+        if (dye[i] > dmax) dmax = dye[i];
+        if (dye[i] > 0.01) nz++;
+        const sp = Math.hypot(u[i], v[i]);
+        if (sp > umax) umax = sp;
+        { const su = Math.hypot(us[i], vs[i]); if (su > (window.__usmax || 0)) window.__usmax = su; }
+      }
+      const p1 = at(5, Math.floor(NY/2)), p2 = at(40, Math.floor(NY/2)), p3 = at(NX-5, Math.floor(NY/2));
+      $('meta').textContent = `dyeMax=${dmax.toFixed(2)} nz=${nz} uMax=${umax.toFixed(0)} usMax=${(window.__usmax||0).toFixed(0)} pts=${window.__pts||0} brkSp=${window.__b_sp||0} brkBd=${window.__b_bd||0} brkSd=${window.__b_sd||0}` +
+        ` | x5:u=${u[p1].toFixed(1)},d=${dye[p1].toFixed(2)}` +
+        ` | x40:u=${u[p2].toFixed(1)},d=${dye[p2].toFixed(2)}` +
+        ` | xEnd:d=${dye[p3].toFixed(2)}`;
+    }
+  } else {
+    let last = performance.now();
+    function loop(now) {
+      advance();
+      spawnParticles();
+      stepParticles();
+      smoothVel();
+      if ((frameNo++ % 10) === 0) {
+        computeForces();
+        const clEl = $('cl'), cdEl = $('cd');
+        if (clEl) clEl.textContent = (Math.abs(clNow) < 0.001 ? '0' : clNow.toFixed(2)) + '  (Cl)';
+        if (cdEl) cdEl.textContent = (Math.abs(cdNow) < 0.001 ? '0' : cdNow.toFixed(2)) + '  (Cd)';
+      }
+      render(mode === 'streak' ? 0.035 : 0.1);
+      requestAnimationFrame(loop);
+    }
+    render(0.1);
+    requestAnimationFrame(loop);
+  }
+})();
+</script>
+</body>
+</html>
