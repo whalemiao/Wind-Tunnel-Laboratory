@@ -47,8 +47,8 @@ jobs:
       - name: Publish to Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.1
-          name: 风洞实验室 v0.1.1
+          tag_name: v0.1.2
+          name: 风洞实验室 v0.1.2
           body: |
             安卓 APK（debug 签名，可直接安装；安装时需允许「未知来源」）。
 

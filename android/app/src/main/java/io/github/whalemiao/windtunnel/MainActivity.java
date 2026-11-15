@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
             s.setBuiltInZoomControls(false);
             s.setDisplayZoomControls(false);
             s.setUseWideViewPort(true);
-            s.setLoadWithOverviewMode(true);
+            s.setLoadWithOverviewMode(false);   // 不要缩放到 980px 宽，否则页面按桌面版渲染
 
             web.setWebViewClient(new WebViewClient());
             web.setWebChromeClient(new WebChromeClient());
