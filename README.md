@@ -117,3 +117,27 @@ shots/              截图
 ## License
 
 MIT
+
+## 安卓 APK
+
+`android/` 是一个最小的 WebView 壳（Java，无 Kotlin），构建前会把仓库根的
+`index.html` / `test-tank.png` 拷进 `assets/` —— **网页只维护一份**。
+
+本地构建（需要 Android SDK + JDK 17）：
+
+```bash
+cd android && gradle assembleDebug
+# 产物：app/build/outputs/apk/debug/app-debug.apk
+```
+
+CI 构建：推送到 `main` 时 `.github/workflows/android.yml` 自动编译，
+产物发到 Release `apk-latest` 和 Actions artifacts。
+
+**为什么是 debug 签名**：发布签名需要 keystore + 密码，不适合放进公开仓库。
+debug 签名能正常安装，只是不能上架应用商店。
+
+## 手机适配
+
+- 侧边栏在窄屏（≤820px）变成抽屉，左上角 ☰ 打开，点遮罩关闭
+- 画布 `touch-action: none` + 阻止默认滚动 → **手机能拖动 / 滚轮缩放 / 旋转物体**
+- 状态栏在手机上只保留 GitHub / B 站图标
