@@ -51,11 +51,12 @@
     display: grid; place-items: center; border-radius: 10px; cursor: pointer;
     border: 1px solid #232b3e; background: rgba(16,20,31,0.85); color: #dbe2f3;
     backdrop-filter: blur(6px); font-size: 15px; line-height: 1;
-    left: 276px; transition: left .2s ease, background .15s;
+    left: 10px; transition: background .15s, transform .15s;
   }
-  #panelBtn:hover { background: #1d2536; }
-  body.panel-collapsed #panelBtn { left: 10px; }
+  #panelBtn:hover { background: #1d2536; transform: scale(1.05); }
   body.panel-collapsed aside { display: none; }
+  /* 桌面：侧栏占左侧 264px，按钮挪到它右边，不压标题 */
+  @media (min-width: 821px) { #panelBtn { left: 276px; } }
 
   /* 手机上的遮罩 */
   #scrim { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 60; }
@@ -70,9 +71,7 @@
     }
     body.panel-open aside { transform: none; }
     body.panel-open #scrim { display: block; }
-    /* 手机上把折叠按钮放到右上角：抽屉从左边滑出时不会盖住它 */
-    #panelBtn { left: auto; right: 10px; }
-    aside { padding-top: 8px; }
+    aside { padding-top: 52px; }   /* 给左上角按钮让位 */
     main { width: 100%; }
     #meta { display: none; }          /* 手机上空间小，状态文字让位给图标 */
     .metabar { gap: 8px; padding: 6px 10px; justify-content: center; }
@@ -976,46 +975,85 @@
   // 用 innerWidth 而不是 matchMedia：WebView 里如果视口被当成 980px，
   // matchMedia 和 CSS 可能不一致，导致按钮走了"桌面折叠"分支、侧栏被 display:none
   function isNarrow() { return window.innerWidth <= 820; }
-  function asideShown() {
-    const a = document.querySelector('aside');
-    if (!a) return false;
-    const cs = getComputedStyle(a);
-    const r = a.getBoundingClientRect();
-    return cs.display !== 'none' && r.width > 0 && r.right > 0;
-  }
-  $('panelBtn').onclick = () => {
-    const narrow = isNarrow();
-    if (narrow) {
-      document.body.classList.remove('panel-collapsed');
-      document.body.classList.toggle('panel-open');
+
+  let panelOpen = false;
+
+  /**
+   * 统一的开合入口：用 JS 记住状态，而不是靠读 CSS 反推。
+   *
+   * 为什么之前会"关不掉"：兜底逻辑给 aside 写了内联 style（transform:none），
+   * 内联样式优先级高于类，于是之后无论怎么切 class，它都永远显示。
+   * 所以每次操作前先把内联样式清干净。
+   */
+  function applyPanel(open) {
+    const aside = document.querySelector('aside');
+    if (!aside) return;
+    aside.style.cssText = '';                   // 清掉历史兜底样式
+    document.body.classList.remove('panel-open', 'panel-collapsed');
+
+    if (isNarrow()) {
+      // 窄屏：默认藏（CSS 里 translateX(-100%)），加 panel-open 才滑出
+      if (open) document.body.classList.add('panel-open');
     } else {
-      document.body.classList.remove('panel-open');
-      document.body.classList.toggle('panel-collapsed');
+      // 宽屏：默认显示，加 panel-collapsed 才收起
+      if (!open) document.body.classList.add('panel-collapsed');
     }
+
+    panelOpen = open;
+
+    // 兜底：切开之后如果实际可见性还是不对，才强制内联（只在内联一次）
     setTimeout(() => {
-      // 兜底：不管 CSS 怎么想，只要用户点了而侧栏不可见，就强制把它显示出来
-      if (!asideShown()) {
-        const a = document.querySelector('aside');
-        a.style.cssText = 'display:block;position:fixed;left:0;top:0;bottom:0;' +
+      const r = aside.getBoundingClientRect();
+      const shown = r.width > 0 && r.right > 0 && getComputedStyle(aside).display !== 'none';
+      if (!shown && open) {
+        aside.style.cssText = 'display:block;position:fixed;left:0;top:0;bottom:0;' +
           'width:min(300px,86vw);z-index:65;transform:none;background:#0d1119;' +
           'border-right:1px solid #1e2534;padding:14px;overflow-y:auto';
-        document.body.classList.add('panel-open');
       }
       fitCanvas();
     }, 260);
-  };
-  $('scrim').onclick = () => {
-    document.body.classList.remove('panel-open');
-    setTimeout(fitCanvas, 240);
-  };
-  // 手机默认收起；桌面默认展开
-  if (isNarrow()) { document.body.classList.remove('panel-open'); }
-  window.addEventListener('resize', () => setTimeout(fitCanvas, 60));
+  }
 
-  // 调试/分享用：?panel=open 直接把侧栏打开
-  if (QS.get('panel') === 'open') {
-    document.body.classList.add(isNarrow() ? 'panel-open' : 'panel-collapsed');
-    if (!isNarrow()) document.body.classList.remove('panel-collapsed');
+  $('panelBtn').onclick = () => applyPanel(!panelOpen);
+
+  $('scrim').onclick = () => applyPanel(false);
+
+  // 启动：窄屏默认收起
+  applyPanel(!isNarrow());
+
+  window.addEventListener('resize', () => {
+    panelOpen = !isNarrow();          // 尺寸变了按新宽度重置一次
+    applyPanel(panelOpen);
+  });
+
+  // 调试/分享：?panel=open 直接打开
+  if (QS.get('panel') === 'open') applyPanel(true);
+
+  // 自检：?paneltest=1 连续开/关三次，把每次的实际可见性写到状态栏
+  if (QS.get('paneltest')) {
+    const log = [];
+    const vis = () => {
+      const a = document.querySelector('aside');
+      const r = a.getBoundingClientRect();
+      return (r.width > 0 && r.right > 0 && getComputedStyle(a).display !== 'none') ? '显示' : '隐藏';
+    };
+    const steps = [true, false, true, false, true, false];
+    let i = 0;
+    const tick = () => {
+      if (i >= steps.length) {
+        const el = document.getElementById('meta');
+        if (el) el.textContent = '自检: ' + log.join(' → ');
+        return;
+      }
+      const want = steps[i];
+      applyPanel(want);
+      setTimeout(() => {
+        log.push((want ? '开' : '关') + '=' + vis());
+        i++;
+        tick();
+      }, 420);
+    };
+    tick();
   }
 
   $('btnPick').onclick = () => $('file').click();
