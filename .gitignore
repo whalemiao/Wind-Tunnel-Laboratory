@@ -1,0 +1,5 @@
+# 构建产物
+desktop/bin/
+desktop/obj/
+dist-exe/
+*.user
