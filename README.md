@@ -38,11 +38,12 @@ index.html ──有 WebGL2 + EXT_color_buffer_float──→ gpu/gpu-fluid.html
 | | GPU 版 `gpu/gpu-fluid.html` | CPU 版 `cpu.html` |
 | --- | --- | --- |
 | 求解器 | 全部在着色器里（浮点渲染目标 ping-pong） | JS，Stable Fluids |
-| 网格 | 512² 起，可到 1024² | 240~800（可调） |
-| 显示层 | 烟 / 速度 / 压力 / 粒子 | 流线 / 脉线 / 条纹烟 / 涡量 / 速度 / 压强 |
+| 网格 | 512² 起，可到 1024²（界面可切，原地重建） | 240~800（可调） |
+| 显示层 | 场（压强/速度/**涡量**）+ 烟 + 粒子（**流线**/脉线/随机） | 同样的三层，六种看法 |
+| 交互 | 拖图/画笔/内置形状/缩放旋转/气动力/保存这一帧 | 一样 |
 | 速度 | 同分辨率下高一个量级 | 640×360 以上开始掉帧 |
 | 兼容性 | 要 WebGL2 + 浮点渲染 | 有 Canvas 2D 就行 |
-| 调试 | `?warm=N` 确定性探针（见 [gpu/README.md](gpu/README.md)） | `?still=` / `?dbg=1` |
+| 调试 | `?warm=N` 确定性探针、`?selftest=1` 自检（见 [gpu/README.md](gpu/README.md)） | `?still=` / `?dbg=1` |
 
 GPU 版在跑不动或不被支持时会**自动退回** CPU 版；想手动对比就加 `?cpu=1`。
 
@@ -50,9 +51,17 @@ GPU 版在跑不动或不被支持时会**自动退回** CPU 版；想手动对�
 | --- | --- |
 | ![条纹烟](shots/gpu-stripes.png) | ![粒子](shots/gpu-view-particles.png) |
 
+| GPU 版 · 流线 + 烟 | GPU 版 · 涡量 |
+| --- | --- |
+| ![流线](shots/gpu-hero.png) | ![涡量](shots/gpu-field-curl.png) |
+
 | GPU 版 · 速度 | GPU 版 · 压力 |
 | --- | --- |
 | ![速度](shots/gpu-view-vel.png) | ![压力](shots/gpu-view-pressure.png) |
+
+| GPU 版 · 手画障碍物 | GPU 版 · 竖屏 |
+| --- | --- |
+| ![画笔](shots/gpu-brush.png) | ![竖屏](shots/gpu-portrait.png) |
 
 ## 用法
 
