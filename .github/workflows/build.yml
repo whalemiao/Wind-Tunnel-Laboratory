@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: v0.2.3
+  RELEASE_TAG: v0.3.0
 
 jobs:
   apk:

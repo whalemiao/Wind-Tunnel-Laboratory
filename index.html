@@ -126,6 +126,8 @@
     <input type="range" id="vort" min="0" max="30" step="1" value="16">
   </div>
   <div class="group">
+    <label>粒子/帧 <span class="val" id="vInject">8</span></label>
+    <input type="range" id="inj" min="1" max="24" step="1" value="8">
     <label>烟迹长度 <span class="val" id="vLife">1.0</span></label>
     <input type="range" id="life" min="0.3" max="3" step="0.1" value="1">
   </div>
@@ -180,6 +182,8 @@
     <input type="range" id="pa" min="0" max="359" step="1" value="0">
   </div>
   <div class="group">
+    <label>烟色 <span class="val" id="vHue">190</span></label>
+    <input type="range" id="hue" min="0" max="360" step="5" value="190">
     <label>亮度 <span class="val" id="vBright">0.70</span></label>
     <input type="range" id="bright" min="0.2" max="2" step="0.05" value="0.7">
   </div>
@@ -205,7 +209,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.2.3 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.0 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -281,6 +285,11 @@
   let cov = null;          // 每个物理格被物体覆盖的比例 0..1
   let fineMask = null;     // 染料级的固体掩码（高精度）
   let baseCanvas = null;   // 导入的原图副本（方便重新处理）
+
+  // 多重网格：粗层（2×2 合并）缓冲
+  const MG = { ready: false, W: 0, H: 0, solid: null, p: null, div: null, res: null };
+  // 多重网格目前是实验特性：收敛质量还打不过 20 次 Jacobi，默认关
+  const useMG = QS.get('mg') === '1';
   let us, vs;          // 平滑后的速度场（仅用于流线积分，防止锯齿状抽动）
   let RS = 2;          // 渲染倍率（画布 = 网格 × RS）
   let fieldCv = null, fieldCtx = null;   // 标量场离屏画布
@@ -295,6 +304,10 @@
     car: '汽车', rock: '岩石', twin: '双圆柱'
   };
   let bgTol = parseInt(QS.get('bgtol') || '26', 10) || 26;   // 抠背景容差
+  let smokeHue = parseFloat(QS.get('hue') || '190');          // 烟色（HSL 色相）
+  let inject = parseFloat(QS.get('inj') || '8');              // 每帧发射粒子数
+  let particleRandom = QS.get('prand') !== '0';
+  let particleTick = 0;
   let flowInited = false;
   let simT = 0;            // 模拟时间（秒），给入口扰动用  // 第一次建掩码要灌满均匀来流，之后拖动才不重置
   let brush = 4;       // 笔刷半径（格子）
@@ -317,6 +330,8 @@
     curl = new Float32Array(n);
     solid = new Uint8Array(n);
     cov = new Float32Array(n);
+    MG.ready = false;          // 尺寸变了，粗层要在用到时重建
+    MG.res = new Float32Array(n);
     us = new Float32Array(n); vs = new Float32Array(n);
     maskImg = new Uint8Array(n); paint = new Uint8Array(n);
     // 渲染分辨率 = 网格 × RS。网格负责物理，RS 负责"线看起来细不细"
@@ -529,7 +544,172 @@
     }
   }
 
+  /**
+   * MacCormack / BFECC 对流：把半拉格朗日的数值耗散补回来。
+   *
+   * 思路（参考 APK 里 advect_*_warp 的做法）：
+   *   ① 正推：phi1 = advect(phi, +dt)
+   *   ② 反推：phi2 = advect(phi1, -dt)
+   *   ③ 校正：phi_new = phi1 + 0.5*(phi - phi2)
+   *   ④ 限幅：夹在 phi 的邻居最大/最小值之间（不夹会过冲、出条纹）
+   *
+   * 代价：一次对流变三次采样。所以只有 dye 用（视觉收益最大、场最小）。
+   */
+  let _mcTmp = null;
+  function advectMC(dst, src, dt, W, H, sx, sy, bilerpFn, solidArr, idxAt) {
+    if (!_mcTmp || _mcTmp.length < W * H) _mcTmp = new Float32Array(W * H);
+    const tmp = _mcTmp;
+    // ① 正推
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const i = idxAt(x, y);
+        if (solidArr && solidArr[i]) { tmp[i] = 0; continue; }
+        const px = x - dt * sx(x, y);
+        const py = y - dt * sy(x, y);
+        tmp[i] = bilerpFn(src, px, py);
+      }
+    }
+    // ② 反推 + ③ 校正 + ④ 限幅
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const i = idxAt(x, y);
+        if (solidArr && solidArr[i]) { dst[i] = 0; continue; }
+        const px = x + dt * sx(x, y);
+        const py = y + dt * sy(x, y);
+        const back = bilerpFn(tmp, px, py);
+        let val = tmp[i] + 0.5 * (src[i] - back);
+
+        // 限幅：用源场的 4 邻居范围
+        const a = src[i], b = src[i - 1], c = src[i + 1];
+        const d0 = src[i - W], e0 = src[i + W];
+        const lo = Math.min(a, b, c, d0, e0);
+        const hi = Math.max(a, b, c, d0, e0);
+        if (val < lo) val = lo; else if (val > hi) val = hi;
+        dst[i] = val;
+      }
+    }
+  }
+
   /* ================= 投影（去散度） ================= */
+  /** 建粗层（2×2 合并）：solid 取"任意子是固体"，其余字段清零 */
+  function mgBuild() {
+    const W = Math.max(6, NX >> 1), H = Math.max(6, NY >> 1);
+    MG.W = W; MG.H = H;
+    MG.solid = new Uint8Array(W * H);
+    MG.p = new Float32Array(W * H);
+    MG.div = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        const cx = x << 1, cy = y << 1;
+        let anySolid = 0;
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) {
+            const xx = cx + dx, yy = cy + dy;
+            if (xx >= NX || yy >= NY) continue;
+            if (solid[yy * NX + xx]) anySolid = 1;
+          }
+        }
+        MG.solid[i] = anySolid;
+      }
+    }
+    MG.ready = true;
+  }
+
+  /** 细网格残差 r = div - laplacian(p) */
+  function mgResidual() {
+    const r = MG.res;
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) { r[i] = 0; continue; }
+        const l = solid[i - 1] ? p[i] : p[i - 1];
+        const rr = solid[i + 1] ? p[i] : p[i + 1];
+        const bb = solid[i - NX] ? p[i] : p[i - NX];
+        const tt = solid[i + NX] ? p[i] : p[i + NX];
+        r[i] = div[i] - ((l + rr + bb + tt) - 4 * p[i]);
+      }
+    }
+  }
+
+  /** 限制：细网格残差 → 粗网格（4 格平均） */
+  function mgRestrict() {
+    const W = MG.W, H = MG.H;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (MG.solid[i]) { MG.div[i] = 0; continue; }
+        let sum = 0, cnt = 0;
+        const cx = x << 1, cy = y << 1;
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) {
+            const xx = cx + dx, yy = cy + dy;
+            if (xx >= NX || yy >= NY) continue;
+            sum += MG.res[yy * NX + xx]; cnt++;
+          }
+        }
+        MG.div[i] = cnt ? sum / cnt : 0;
+        MG.p[i] = 0;
+      }
+    }
+  }
+
+  /** 粗层 Jacobi 光滑 */
+  function mgSmoothCoarse(iters) {
+    const W = MG.W, H = MG.H, P = MG.p, D = MG.div, S = MG.solid;
+    for (let k = 0; k < iters; k++) {
+      for (let y = 1; y < H - 1; y++) {
+        for (let x = 1; x < W - 1; x++) {
+          const i = y * W + x;
+          if (S[i]) { P[i] = 0; continue; }
+          const l = S[i - 1] ? P[i] : P[i - 1];
+          const r = S[i + 1] ? P[i] : P[i + 1];
+          const b = S[i - W] ? P[i] : P[i - W];
+          const t = S[i + W] ? P[i] : P[i + W];
+          P[i] = (D[i] + l + r + b + t) * 0.25;
+        }
+      }
+    }
+  }
+
+  /** 延拓：粗层修正加到细网格 p 上（双线性） */
+  function mgProlongAdd() {
+    const W = MG.W, H = MG.H, P = MG.p;
+    for (let y = 1; y < NY - 1; y++) {
+      for (let x = 1; x < NX - 1; x++) {
+        const i = at(x, y);
+        if (solid[i]) continue;
+        const gx = Math.min(W - 1.001, Math.max(0, x * 0.5));
+        const gy = Math.min(H - 1.001, Math.max(0, y * 0.5));
+        const x0 = gx | 0, y0 = gy | 0;
+        const fx = gx - x0, fy = gy - y0;
+        const i00 = y0 * W + x0;
+        const v00 = P[i00], v10 = P[i00 + 1];
+        const v01 = P[i00 + W], v11 = P[i00 + W + 1];
+        const v = (v00 * (1 - fx) + v10 * fx) * (1 - fy) +
+                  (v01 * (1 - fx) + v11 * fx) * fy;
+        p[i] += v;
+      }
+    }
+  }
+
+  /** 细网格 Jacobi 光滑（和原来 project 里那段一致） */
+  function mgSmoothFine(iters) {
+    for (let k = 0; k < iters; k++) {
+      for (let y = 1; y < NY - 1; y++) {
+        for (let x = 1; x < NX - 1; x++) {
+          const i = at(x, y);
+          if (solid[i]) continue;
+          const l = solid[i - 1] ? p[i] : p[i - 1];
+          const r = solid[i + 1] ? p[i] : p[i + 1];
+          const b = solid[i - NX] ? p[i] : p[i - NX];
+          const t = solid[i + NX] ? p[i] : p[i + NX];
+          p[i] = (div[i] + l + r + b + t) * 0.25;
+        }
+      }
+    }
+  }
+
   function project(iters) {
     const h = 1;   // 格子间距
     for (let y = 1; y < NY - 1; y++) {
@@ -544,18 +724,33 @@
         p[i] = 0;
       }
     }
-    for (let k = 0; k < iters; k++) {
-      for (let y = 1; y < NY - 1; y++) {
-        for (let x = 1; x < NX - 1; x++) {
-          const i = at(x, y);
-          if (solid[i]) continue;
-          const l = solid[i - 1] ? p[i] : p[i - 1];
-          const r = solid[i + 1] ? p[i] : p[i + 1];
-          const b = solid[i - NX] ? p[i] : p[i - NX];
-          const t = solid[i + NX] ? p[i] : p[i + NX];
-          p[i] = (div[i] + l + r + b + t) * 0.25;
+    // ── 多重网格 V 循环（对标参考 APK 的 prolong_pression / MGE 边界）──
+    // 只做 Jacobi 的话，低频误差收敛极慢，只能靠堆迭代次数（很贵）。
+    // 这里：细层光滑 → 限制残差到粗层 → 粗层多迭代（便宜）→ 延拓回细层 → 再光滑。
+    if (!useMG) {
+      for (let k = 0; k < iters; k++) {
+        for (let y = 1; y < NY - 1; y++) {
+          for (let x = 1; x < NX - 1; x++) {
+            const i = at(x, y);
+            if (solid[i]) continue;
+            const l = solid[i - 1] ? p[i] : p[i - 1];
+            const r = solid[i + 1] ? p[i] : p[i + 1];
+            const b = solid[i - NX] ? p[i] : p[i - NX];
+            const t = solid[i + NX] ? p[i] : p[i + NX];
+            p[i] = (div[i] + l + r + b + t) * 0.25;
+          }
         }
       }
+    } else {
+    if (!MG.ready) mgBuild();
+    for (let vc = 0; vc < 2; vc++) {
+      mgSmoothFine(Math.max(5, iters >> 2));     // 细层预光滑
+      mgResidual();                               // r = div - ∇²p
+      mgRestrict();                               // 粗层残差
+      mgSmoothCoarse(Math.max(12, iters));        // 粗层求解（1/4 代价）
+      mgProlongAdd();                             // 修正回细层
+      mgSmoothFine(Math.max(6, iters >> 2));      // 细层后光滑
+    }
     }
     for (let y = 1; y < NY - 1; y++) {
       for (let x = 1; x < NX - 1; x++) {
@@ -704,23 +899,14 @@
     // ── 染料对流（高分辨率网格）──────────────────────────────
     // 速度场是粗网格的；细网格回退时要把"粗格/秒"换成"细格/秒"，所以乘 DS。
     // 采样用 sampleUF（已经过空间平滑 + 时间低通），比直接读 u/v 稳。
+    // 染料：MacCormack（误差补偿）→ 涡丝更锐、不发糊
     dyeTmp.set(dye);
-    for (let y = 1; y < DY - 1; y++) {
-      for (let x = 1; x < DX - 1; x++) {
-        const i = atD(x, y);
-        if (solidD[i]) { dye[i] = 0; continue; }
-        // 细网格坐标 → 粗网格坐标
-        const cx = x / DS, cy = y / DS;
-        sampleUVCoarse(cx, cy, _s1);
-        // RK2：先退半步取中间点速度，再退整步 —— 减少折线和锯齿
-        const mx = cx - 0.5 * dt * _s1[0] * 0.5;
-        const my = cy - 0.5 * dt * _s1[1] * 0.5;
-        sampleUVCoarse(mx, my, _s2);
-        const px = x - dt * _s2[0] * DS;
-        const py = y - dt * _s2[1] * DS;
-        dye[i] = bilerpD(dyeTmp, px, py) * 0.998;
-      }
-    }
+    advectMC(dye, dyeTmp, dt, DX, DY,
+      // 细网格 x 方向的速度（粗格/秒 → 细格/秒）
+      (x, y) => { const c = x / DS, d0 = y / DS; sampleUVCoarse(c, d0, _s1); return _s1[0] * DS; },
+      (x, y) => { const c = x / DS, d0 = y / DS; sampleUVCoarse(c, d0, _s1); return _s1[1] * DS; },
+      bilerpD, solidD, atD);
+    for (let i = 0, n = DX * DY; i < n; i++) dye[i] *= 0.998;
     // 入口持续注入条纹（细网格）
     const bandH = 14 * DS;
     for (let y = 1; y < DY - 1; y++) {
@@ -734,9 +920,12 @@
   const particles = [];
 
   function spawnParticles() {
-    const want = 8;
+    const want = Math.max(1, Math.round(inject));
     for (let k = 0; k < want; k++) {
-      const y = 2 + Math.random() * (NY - 4);
+      // setRandom：按"随机 / 均匀"决定发射位置的纵向分布
+      const y = particleRandom
+        ? 2 + Math.random() * (NY - 4)
+        : 2 + ((particleTick++ * 7) % Math.max(1, NY - 4));
       particles.push({
         x: 1 + Math.random(),
         y,
@@ -894,7 +1083,20 @@
       if (solidD[i]) { r = 26; g = 30; b = 42; }
       else {
         const t = Math.max(0, Math.min(1, dye[i]));
-        r = 30 + 200 * t; g = 90 + 165 * t; b = 140 + 115 * t;
+        // HSL → RGB：色相可调，明度随染料浓度上升
+        const hh = smokeHue / 360, ss = 0.42, ll = 0.08 + 0.74 * t;
+        const q = ll < 0.5 ? ll * (1 + ss) : ll + ss - ll * ss;
+        const pp = 2 * ll - q;
+        const hue2rgb = (t1, t2, t3) => {
+          if (t3 < 0) t3 += 1; if (t3 > 1) t3 -= 1;
+          if (t3 * 6 < 1) return t1 + (t2 - t1) * 6 * t3;
+          if (t3 * 2 < 1) return t2;
+          if (t3 * 3 < 2) return t1 + (t2 - t1) * (2 / 3 - t3) * 6;
+          return t1;
+        };
+        r = Math.round(hue2rgb(pp, q, hh + 1 / 3) * 255);
+        g = Math.round(hue2rgb(pp, q, hh) * 255);
+        b = Math.round(hue2rgb(pp, q, hh - 1 / 3) * 255);
       }
       const q = i * 4;
       d[q] = r; d[q + 1] = g; d[q + 2] = b; d[q + 3] = 255;
@@ -1460,6 +1662,7 @@
   $('visc').oninput  = (e) => { visc = +e.target.value;  $('vVisc').textContent = visc.toFixed(2); };
   $('vort').oninput  = (e) => { vortF = +e.target.value; $('vVort').textContent = vortF.toFixed(0); };
   $('life').oninput  = (e) => { life = +e.target.value;  $('vLife').textContent = life.toFixed(1); };
+  $('inj').oninput   = (e) => { inject = +e.target.value; $('vInject').textContent = inject; };
   $('mode').onclick = (e) => {
     const b = e.target.closest('button[data-m]');
     if (!b) return;
@@ -1486,6 +1689,7 @@
   };
   if ($('autoBg')) $('autoBg').onchange = () => { if (baseCanvas) reprocessImage(); };
   $('bright').oninput = (e) => { bright = +e.target.value; $('vBright').textContent = bright.toFixed(2); };
+  $('hue').oninput = (e) => { smokeHue = +e.target.value; $('vHue').textContent = smokeHue; };
 
   $('px').oninput = (e) => { objX = +e.target.value / 100; rebuildObject(); syncObjUI(); };
   $('py').oninput = (e) => { objY = +e.target.value / 100; rebuildObject(); syncObjUI(); };
@@ -1596,7 +1800,9 @@
   $('visc').value = visc;   $('vVisc').textContent = visc.toFixed(2);
   $('vort').value = vortF;  $('vVort').textContent = vortF.toFixed(0);
   $('life').value = life;   $('vLife').textContent = life.toFixed(1);
+  $('inj').value = inject;  $('vInject').textContent = inject;
   $('bright').value = bright; $('vBright').textContent = bright.toFixed(2);
+  $('hue').value = smokeHue; $('vHue').textContent = smokeHue;
   $('vRes').textContent = NX + '×' + NY;
   [...$('mode').children].forEach(b => b.classList.toggle('on', b.dataset.m === mode));
   $('btnDemo').textContent = '内置形状：' + (SHAPE_NAMES)[SHAPE] + '（点击切换）';
