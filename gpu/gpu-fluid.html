@@ -470,13 +470,10 @@
       vec4 m = texture(uMask, fuv);
       vec3 col = mix(vec3(0.05,0.06,0.09), m.rgb * (dimSolid == 1 ? 0.45 : 1.0),
                      clamp(m.a, 0.0, 1.0));
-      // 白边：四个邻格里有流体就描一条白线（参考 app 的观感）
+      // 白边：用**高分辨率**颜色贴图的 alpha 判断（按网格掩码描边会有格子锯齿）
       if (outlineOn == 1) {
-        float n = texture(uSolid, fuv + vec2(texel.x, 0.0)).r
-                + texture(uSolid, fuv - vec2(texel.x, 0.0)).r
-                + texture(uSolid, fuv + vec2(0.0, texel.y)).r
-                + texture(uSolid, fuv - vec2(0.0, texel.y)).r;
-        if (n < 3.5) col = vec3(0.86, 0.92, 1.0);
+        float rim = 1.0 - smoothstep(0.60, 0.98, m.a);
+        col = mix(col, vec3(0.86, 0.92, 1.0), rim * 0.9);
       }
       fragColor = vec4(col, 1.0);
       return;
@@ -635,6 +632,7 @@
     return Math.max(48, Math.min(2048, Math.round(sx * ratio)));
   }
   let vel, pressure, divergence, dye, solid, maskColor, velSmall;
+  let MK = 1;                        // 颜色贴图的超采样倍数（1..4）
   const VW = 160;                    // 速度小图分辨率（流线积分的输入）
   // 显式 ping-pong 变量：每一步明确读哪个写哪个
   let vA, vB, pA, pB, dA, dB, pa, pb;
@@ -653,7 +651,11 @@
            makeTarget(S, SY, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT)];
     solid = makeTarget(S, SY, gl.R8, gl.RED, gl.UNSIGNED_BYTE);
     // 掩码的彩色版本：只用于显示（把原图贴回固体格），不参与物理
-    maskColor = makeTarget(S, SY, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+    // 物体颜色贴图：按屏幕像素来（网格分辨率太低，放大就糊）。MK = 最多 4 倍超采样
+    MK = Math.max(1, Math.min(4, Math.ceil(
+      Math.max(cv.clientWidth || 1, cv.clientHeight || 1) / Math.max(S, SY))));
+    while (MK > 1 && (S * MK > 2048 || SY * MK > 2048)) MK--;
+    maskColor = makeTarget(S * MK, SY * MK, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
     // 速度小图：流线积分只读它（160² = 100KB，比读 512² 的 4MB 便宜 40 倍）
     velSmall = makeTarget(VW, VW, gl.RG16F, gl.RG, gl.HALF_FLOAT);
     [vel[0], vel[1], pressure[0], pressure[1], dye[0], dye[1], solid, maskColor, velSmall].forEach(clearTarget);
@@ -873,9 +875,49 @@
     solidBits = out;                  // 留一份在 JS 里：流线积分要判断"撞墙没有"
     // 同一张画布也当颜色贴图传上去（显示固体格用）。
     // 画布上传默认也是"顶行→t=0"，所以要开 UNPACK_FLIP_Y 和上面的行翻转保持一致。
+    // 颜色贴图：同一套变换按 MK 倍再画一遍（原图直接画，不在中间缩一次 → 不糊）
+    const cc = document.createElement('canvas');
+    cc.width = S * MK; cc.height = SY * MK;
+    const cg = cc.getContext('2d');
+    if (maskImg) {
+      const fit = Math.min(S, SY) * objScale / Math.max(maskImg.width, maskImg.height);
+      const w = maskImg.width * fit, h = maskImg.height * fit;
+      cg.save();
+      cg.scale(MK, MK);
+      cg.translate(objX * S, SY * (1 - objY));
+      cg.rotate(objAngle * Math.PI / 180);
+      cg.imageSmoothingQuality = 'high';
+      cg.drawImage(maskImg, -w / 2, -h / 2, w, h);
+      cg.restore();
+    }
+    // 手画的地方给个墙色（一次性拼一张小图再放大，别逐格 fillRect）
+    if (paint) {
+      let any = false;
+      for (let i = 0; i < paint.length && !any; i++) if (paint[i]) any = true;
+      if (any) {
+        const pc = document.createElement('canvas');
+        pc.width = S; pc.height = SY;
+        const pg = pc.getContext('2d');
+        const id = pg.createImageData(S, SY);
+        for (let y = 0; y < SY; y++) {
+          const fy = SY - 1 - y;              // 场行 → 画布行
+          for (let x = 0; x < S; x++) {
+            if (!paint[fy * S + x]) continue;
+            const o = (y * S + x) * 4;
+            id.data[o] = 226; id.data[o + 1] = 232; id.data[o + 2] = 240; id.data[o + 3] = 255;
+          }
+        }
+        pg.putImageData(id, 0, 0);
+        cg.save();
+        cg.scale(MK, MK);
+        cg.imageSmoothingEnabled = false;     // 手画是格子的，别糊
+        cg.drawImage(pc, 0, 0);
+        cg.restore();
+      }
+    }
     gl.bindTexture(gl.TEXTURE_2D, maskColor.tex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, c);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, cc);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     hasMask = true;
 
@@ -1975,7 +2017,9 @@
         // 期望落点：屏幕 72% 高处 = 从底部 28%
         const atExpected = readPx(0.5, 0.28);
         const atMirror = readPx(0.5, 0.72);
-        ok('画笔落点跟着指针', atExpected !== '#000' && atExpected.split(',')[0] < 200, '期望处=' + atExpected + ' 镜像处=' + atMirror);
+        // 画上去的墙是浅灰 (226,232,240)，背景是暗色 → 期望处应该"亮"
+        const eR = +atExpected.split(',')[0], mR = +atMirror.split(',')[0];
+        ok('画笔落点跟着指针', eR > 180 && mR < 120, '期望处=' + atExpected + ' 镜像处=' + atMirror);
       }
 
       // 物体中心 = 场坐标 (objX,objY)：画布行号必须是 S·(1−objY)
