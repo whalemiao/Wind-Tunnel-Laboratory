@@ -36,6 +36,9 @@
   .seg { display: flex; flex-wrap: wrap; gap: 5px; }
   .seg button { margin: 0; font-size: 12px; padding: 5px 0; width: calc(50% - 3px); }
   .seg button.on { background: #2563eb; border-color: #2563eb; color: #fff; }
+  .chk { display: flex; align-items: center; gap: 7px; margin-top: 8px;
+         font-size: 11.5px; color: #8b9ab8; cursor: pointer; user-select: none; }
+  .chk input { accent-color: #2dd4bf; width: 14px; height: 14px; }
   .hint { font-size: 11px; color: #566178; margin-top: 8px; line-height: 1.5; }
   main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #stage { flex: 1; display: grid; place-items: center; background: #05070d; min-height: 0; padding: 8px; }
@@ -105,19 +108,20 @@
 
   <div id="drop">拖透明底 PNG 进来<br>或点下面</div>
   <button id="btnPick" class="primary">选择图片</button>
+  <label class="chk"><input type="checkbox" id="autoBg" checked> 自动去背景（按边缘颜色）</label>
   <button id="btnDemo">内置形状（圆柱 / 翼型 / 汽车…）</button>
 
   <div class="group">
     <label>风速 <span class="val" id="vSpeed">1.00</span></label>
-    <input type="range" id="speed" min="0.2" max="2.5" step="0.05" value="1">
+    <input type="range" id="speed" min="0.2" max="4" step="0.05" value="1.7">
   </div>
   <div class="group">
     <label>黏性（越小越乱） <span class="val" id="vVisc">0.15</span></label>
-    <input type="range" id="visc" min="0" max="1" step="0.01" value="0.15">
+    <input type="range" id="visc" min="0" max="1" step="0.01" value="0.06">
   </div>
   <div class="group">
     <label>涡量强度 <span class="val" id="vVort">12</span></label>
-    <input type="range" id="vort" min="0" max="25" step="1" value="10">
+    <input type="range" id="vort" min="0" max="30" step="1" value="16">
   </div>
   <div class="group">
     <label>烟迹长度 <span class="val" id="vLife">1.0</span></label>
@@ -199,7 +203,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.2.1 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.2.2 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -248,9 +252,9 @@
   let NY = parseInt(RES.split('x')[1], 10) || 180;
   const N = () => NX * NY;
 
-  let speed = parseFloat(QS.get('speed') || '1') || 1;   // 0.2~2.5
-  let visc  = parseFloat(QS.get('visc') || '0.15');      // 0~1
-  let vortF = parseFloat(QS.get('vort') || '12');        // 涡量约束强度
+  let speed = parseFloat(QS.get('speed') || '1.7') || 1.7;   // 0.2~4
+  let visc  = parseFloat(QS.get('visc') || '0.06');       // 0~1
+  let vortF = parseFloat(QS.get('vort') || '16');         // 涡量约束强度
   let life  = parseFloat(QS.get('life') || '1');         // 烟迹长度
   let bright = parseFloat(QS.get('bright') || '0.7');    // 流线/粒子亮度倍数
   let mode  = QS.get('mode') || 'stream';
@@ -287,7 +291,8 @@
     circle: '圆柱', airfoil: '翼型', teardrop: '水滴',
     car: '汽车', rock: '岩石', twin: '双圆柱'
   };
-  let flowInited = false;  // 第一次建掩码要灌满均匀来流，之后拖动才不重置
+  let flowInited = false;
+  let simT = 0;            // 模拟时间（秒），给入口扰动用  // 第一次建掩码要灌满均匀来流，之后拖动才不重置
   let brush = 4;       // 笔刷半径（格子）
   // 物体摆放：像真实风洞那样可以把模型挪来挪去、放大缩小、转个角度
   let objX = parseFloat(QS.get('ox') || '0.30');
@@ -640,9 +645,13 @@
   /* ================= 边界 ================= */
   function applyBoundary() {
     const U = U0 * speed;
+    // 入口给一个很轻的上下摆动（幅度 3%）。
+    // 完全对称的入口会让流场一直保持对称，物体后面永远不脱涡 ——
+    // 真实风洞里这点扰动来自来流的湍流度。
+    const wobble = 0.03 * U * Math.sin(simT * 2.4) + 0.015 * U * Math.sin(simT * 6.7);
     for (let y = 1; y < NY - 1; y++) {
       const i = at(0, y);
-      if (!solid[i]) { u[i] = U; v[i] = 0; }
+      if (!solid[i]) { u[i] = U; v[i] = wobble; }
       const r = at(NX - 1, y);
       const a = at(NX - 2, y);
       u[r] = u[a]; v[r] = v[a];
@@ -659,7 +668,7 @@
         // 边缘格（覆盖率 0.15~0.5）：按覆盖比例削弱速度，
         // 这样物体轮廓是"半透"的，气流不会从笔画缝里直穿
         if (cov && cov[i] > 0.15) {
-          const k = 1 - 0.85 * cov[i];
+          const k = 1 - 0.55 * cov[i];
           u[i] *= k; v[i] *= k;
         }
         if (solid[i - 1] || solid[i + 1] || solid[i - NX] || solid[i + NX]) {
@@ -673,6 +682,7 @@
   /* ================= 推进一帧 ================= */
   const dt = 1 / 60;
   function advance() {
+    simT += dt;
     computeCurl();
     vorticityConfinement(dt);
 
@@ -797,14 +807,30 @@
     const Hh = 0.7;                       // 步长更小，曲线更顺
     const MAXSTEP = Math.ceil(NX * 1.8 / Hh);
     // 烟感关键：线细一点、透明度低一点、加辉光 → 叠起来像烟，不像钢笔线
-    g.lineWidth = 0.8;
+    // 线宽要按 RS 反算，否则 RS=4 时线是 3.2 像素，看起来又粗又糊
+    g.lineWidth = Math.max(0.22, 1.1 / RS);
     g.lineJoin = 'round';
     g.lineCap = 'round';
-    g.shadowColor = 'rgba(125,211,252,0.65)';
-    g.shadowBlur = 4;
+    // 注意：shadowBlur 是逐条 stroke 的高开销特效，
+    // 手机上几十条线每帧都模糊一遍 = 直接掉帧。改用双层描边模拟辉光。
+    g.shadowBlur = 0;
 
+    // 种子 ①：入口
+    const seeds = [];
     for (let s = 0; s < seedsRows; s++) {
-      let x = 3, y = 2.5 + s * (NY - 5) / (seedsRows - 1);
+      seeds.push([3, 2.5 + s * (NY - 5) / (seedsRows - 1)]);
+    }
+    // 种子 ②：全场稀疏网格 —— 尾流区靠这些线才能"看得见"
+    const stepX = Math.max(18, Math.round(NX / 10));
+    const stepY = Math.max(12, Math.round(NY / 9));
+    for (let y = stepY; y < NY - 3; y += stepY) {
+      for (let x = stepX; x < NX - 3; x += stepX) {
+        seeds.push([x, y]);
+      }
+    }
+
+    for (let si = 0; si < seeds.length; si++) {
+      let x = seeds[si][0], y = seeds[si][1];
       if (solid[clampCell(x | 0, y | 0)]) continue;
       g.beginPath();
       g.moveTo(x, y);
@@ -838,7 +864,7 @@
         g.lineTo(x, y);
         window.__pts = (window.__pts || 0) + 1;
       }
-      const t = s / (seedsRows - 1);
+      const t = Math.min(1, (si % seedsRows) / (seedsRows - 1));
       g.strokeStyle = `rgba(${(90 + 50 * t) | 0},${(200 - 30 * t) | 0},252,${alpha})`;
       g.stroke();
     }
@@ -851,7 +877,7 @@
       const sp = Math.hypot(u[i], v[i]) / (U0 * speed || 1);
       const gg = 160 + 80 * Math.min(1, sp);
       g.fillStyle = `rgba(140,${gg | 0},255,${alpha})`;
-      g.fillRect(q.x, q.y, 1.3, 1.3);
+      g.fillRect(q.x, q.y, Math.max(0.6, 1.4 / RS), Math.max(0.6, 1.4 / RS));
     }
   }
 
@@ -1184,30 +1210,86 @@
       const c = document.createElement('canvas');
       c.width = im.naturalWidth; c.height = im.naturalHeight;
       c.getContext('2d').drawImage(im, 0, 0);
+      let stripped = 0;
+      if ($('autoBg') && $('autoBg').checked) stripped = stripBackground(c);
       loadFromCanvas(c);
-      $('meta').textContent = `已加载 ${url} · 原图 ${im.naturalWidth}×${im.naturalHeight}`;
+      $('meta').textContent = `已加载 ${url} · 原图 ${im.naturalWidth}×${im.naturalHeight}` +
+        (stripped > 0.02 ? ` · 已抠背景 ${(stripped * 100).toFixed(0)}%` : '');
       rerenderIfStill();
     };
     im.onerror = () => { $('meta').textContent = '图片加载失败: ' + url; };
     im.src = url;
   }
 
+  /**
+   * 自动抠背景：从四条边泛洪，把和边缘颜色接近的像素设成透明。
+   *
+   * 为什么需要：很多 PNG 是"整块深色背景 + 车"，
+   * 直接用 alpha 当掩码就会变成一个矩形，气流全被挡住 ——
+   * 表现就是"纯色块""车头前方气流空白"。
+   */
+  function stripBackground(canvas) {
+    const g = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const id = g.getImageData(0, 0, W, H);
+    const d = id.data;
+
+    // 取四角 + 四边中点的中位色作为"背景色"
+    const pick = [];
+    for (const [x, y] of [[0,0],[W-1,0],[0,H-1],[W-1,H-1],[W>>1,0],[W>>1,H-1],[0,H>>1],[W-1,H>>1]]) {
+      const q = (y * W + x) * 4;
+      pick.push([d[q], d[q+1], d[q+2]]);
+    }
+    pick.sort((a, b) => (a[0]+a[1]+a[2]) - (b[0]+b[1]+b[2]));
+    const bg = pick[pick.length >> 1];
+    const tol = 42 * 42;
+
+    const match = (q) => {
+      if (d[q + 3] < 8) return true;                    // 本来就透明
+      const dr = d[q] - bg[0], dg = d[q+1] - bg[1], db = d[q+2] - bg[2];
+      return dr*dr + dg*dg + db*db < tol;
+    };
+
+    // 四边泛洪（BFS，只删连成一片的背景，不会吃掉物体内部的同色高光）
+    const seen = new Uint8Array(W * H);
+    const stack = [];
+    for (let x = 0; x < W; x++) { stack.push(x); stack.push((H - 1) * W + x); }
+    for (let y = 0; y < H; y++) { stack.push(y * W); stack.push(y * W + W - 1); }
+    let removed = 0;
+    while (stack.length) {
+      const idx = stack.pop();
+      if (seen[idx]) continue;
+      seen[idx] = 1;
+      const q = idx * 4;
+      if (!match(q)) continue;
+      d[q + 3] = 0;
+      removed++;
+      const x = idx % W, y = (idx / W) | 0;
+      if (x > 0) stack.push(idx - 1);
+      if (x < W - 1) stack.push(idx + 1);
+      if (y > 0) stack.push(idx - W);
+      if (y < H - 1) stack.push(idx + W);
+    }
+    g.putImageData(id, 0, 0);
+    return removed / (W * H);      // 返回抠掉的比例，用来给用户一个反馈
+  }
+
   function useImageFile(file) {
     const im = new Image();
     im.onload = () => {
-      // 等比缩放到网格，左侧留出上游、右侧留尾流
+      // 关键：保留原始像素！之前先缩到 NX×NY，高清细节在第一步就没了
       const c = document.createElement('canvas');
-      c.width = NX; c.height = NY;
-      const g = c.getContext('2d');
-      const s = Math.min(NX * 0.55 / im.naturalWidth, NY * 0.85 / im.naturalHeight);
-      const w = im.naturalWidth * s, h = im.naturalHeight * s;
-      g.drawImage(im, NX * 0.3 - w / 2, (NY - h) / 2, w, h);
-      // 上层显示用同一张
-      img = document.createElement('canvas');
-      img.width = NX; img.height = NY;
-      img.getContext('2d').drawImage(c, 0, 0);
+      c.width = im.naturalWidth;
+      c.height = im.naturalHeight;
+      c.getContext('2d').drawImage(im, 0, 0);
+
+      let stripped = 0;
+      if ($('autoBg') && $('autoBg').checked) stripped = stripBackground(c);
+
       loadFromCanvas(c);
-      $('meta').textContent = `${file.name} · 原图 ${im.naturalWidth}×${im.naturalHeight} · 不透明像素 = 实体`;
+      $('meta').textContent = `${file.name} · 原图 ${im.naturalWidth}×${im.naturalHeight}` +
+        (stripped > 0.02 ? ` · 已抠背景 ${(stripped * 100).toFixed(0)}%` : '') +
+        ` · 不透明像素 = 实体`;
       rerenderIfStill();
     };
     im.src = URL.createObjectURL(file);
@@ -1518,6 +1600,24 @@
     }
   } else {
     let last = performance.now();
+    // ── 自适应画质：连续掉帧就把染料倍率从 2× 降到 1× ──
+    let frameAcc = 0, frameCnt = 0, autoDropped = false;
+    function autoQuality(dtms) {
+      if (autoDropped || DS <= 1) return;
+      frameAcc += dtms; frameCnt++;
+      if (frameCnt < 90) return;
+      const avg = frameAcc / frameCnt;
+      frameAcc = 0; frameCnt = 0;
+      if (avg > 32) {                       // 平均低于 ~31fps 就降级
+        DS = 1;
+        autoDropped = true;
+        alloc();
+        flowInited = false;
+        rebuildObject();
+        flowInited = true;
+        $('meta').textContent = `已自动降级：染料 ${avg.toFixed(0)}ms/帧偏慢 → 1× 分辨率`;
+      }
+    }
     function loop(now) {
       advance();
       spawnParticles();

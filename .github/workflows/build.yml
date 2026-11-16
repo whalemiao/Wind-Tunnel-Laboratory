@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write      # 发 Release
+  contents: write      # �?Release
   pages: write         # 部署 Pages
   id-token: write
 
@@ -21,10 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: v0.2.1
-  # 注：这三个 job 都会把 index.html 里的 __BUILD_DATE__ 换成当天日期，
-  # 让「关于」里显示"最后更新"，用户一眼能看出还在维护。
-
+  RELEASE_TAG: v0.2.2
+  # 注：这三�?job 都会�?index.html 里的 __BUILD_DATE__ 换成当天日期�?  # 让「关于」里显示"最后更�?，用户一眼能看出还在维护�?
 jobs:
   # ── 1. 安卓 APK ─────────────────────────────────────────────
   apk:
@@ -94,7 +92,7 @@ jobs:
           path: out/WindTunnelLab.exe
           if-no-files-found: error
 
-  # ── 3. 发布到 Release（说明从 CHANGELOG 提取）──────────────
+  # ── 3. 发布�?Release（说明从 CHANGELOG 提取）──────────────
   release:
     needs: [apk, exe]
     runs-on: ubuntu-latest
@@ -121,8 +119,7 @@ jobs:
           m = re.search(r"^##\s+" + re.escape(ver) + r"[^\n]*\n(.*?)(?=^##\s|\Z)",
                         text, re.S | re.M)
           changes = m.group(1).strip() if m else "_本版没有写更新说明_"
-          notes = f"""## 这次改了什么
-
+          notes = f"""## 这次改了什�?
           {changes}
 
           ---
@@ -132,11 +129,11 @@ jobs:
           | 平台 | 文件 | 说明 |
           | --- | --- | --- |
           | Windows | `WindTunnelLab.exe` | 单文件，自带 .NET 运行时，双击即用 |
-          | Android | `wind-tunnel-lab.apk` | debug 签名，安装时允许「未知来源」 |
+          | Android | `wind-tunnel-lab.apk` | debug 签名，安装时允许「未知来源�?|
 
           网页版：https://whalemiao.github.io/Wind-Tunnel-Laboratory/
 
-          如果这里下载不动（会跳 objects.githubusercontent.com），用 Pages 上的同一份：
+          如果这里下载不动（会�?objects.githubusercontent.com），�?Pages 上的同一份：
 
           - EXE https://whalemiao.github.io/Wind-Tunnel-Laboratory/WindTunnelLab.exe
           - APK https://whalemiao.github.io/Wind-Tunnel-Laboratory/wind-tunnel-lab.apk
@@ -149,14 +146,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: 风洞实验室 ${{ env.RELEASE_TAG }}
+          name: 风洞实验�?${{ env.RELEASE_TAG }}
           body_path: RELEASE_NOTES.md
           files: |
             dist/wind-tunnel-lab.apk
             dist/WindTunnelLab.exe
           make_latest: true
 
-  # ── 4. Pages（网页 + 两个安装包）───────────────────────────
+  # ── 4. Pages（网�?+ 两个安装包）───────────────────────────
   pages:
     needs: [apk, exe]
     runs-on: ubuntu-latest
