@@ -9,8 +9,8 @@
     <AssemblyName>WindTunnelLab</AssemblyName>
     <RootNamespace>WindTunnelLab</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.3.1</Version>
-    <FileVersion>0.3.1.0</FileVersion>
+    <Version>0.3.2</Version>
+    <FileVersion>0.3.2.0</FileVersion>
 
     <!-- 单文件 + 自带运行时：下载一个 exe 直接双击就能用，不用先装 .NET -->
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

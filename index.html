@@ -209,7 +209,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.1 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.2 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -294,6 +294,7 @@
   let cov = null;          // 每个物理格被物体覆盖的比例 0..1
   let fineMask = null;     // 染料级的固体掩码（高精度）
   let baseCanvas = null;   // 导入的原图副本（方便重新处理）
+  let outlineCv = null;    // 物体轮廓（白色描边，参考 app 的做法）
 
   // 多重网格：粗层（2×2 合并）缓冲
   const MG = { ready: false, W: 0, H: 0, solid: null, p: null, div: null, res: null };
@@ -1217,6 +1218,21 @@
                   objGeom.w * k, objGeom.h * k);
     ctx.globalAlpha = 1;
     ctx.restore();
+
+    // 白色描边 + 辉光（参考 app 的观感：物体是"亮边黑体"，不是实心贴图）
+    if (outlineCv) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.55 * (1 / Math.max(1, 1));
+      ctx.shadowColor = 'rgba(180,220,255,0.9)';
+      ctx.shadowBlur = Math.max(3, RS * 2.2);
+      ctx.drawImage(outlineCv, 0, 0, NX * RS, NY * RS);
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.restore();
+    }
   }
 
   function render(fade) {
@@ -1246,6 +1262,12 @@
       ctx.drawImage(smokeCv, 0, 0, NX, NY);
     } else {
       drawFieldMode();
+      // 场视图上叠加粒子：参考 app 的"Press./Speed/Curl + Particles"组合
+      if (mode !== 'stripes' && mode !== 'curl' && overlayParticles) {
+        ctx.globalCompositeOperation = 'lighter';
+        drawParticles(ctx, 0.35 * bright);
+        ctx.globalCompositeOperation = 'source-over';
+      }
       if (mode === 'curl') {
         ctx.globalAlpha = 0.35;
         drawStreamlines(ctx, 0.5 * bright);
@@ -1402,6 +1424,7 @@
       }
     }
     solidDFromFine(fine);
+    buildOutline(fine);
     cov = covMask;
     if (!solid) solid = new Uint8Array(n);
     updateSolidFromCov();
@@ -1409,6 +1432,27 @@
     maskImg.set(solid);
     mergePaint();
     if (needInit) initFlow();
+  }
+
+  /** 从高精度固体掩码提取轮廓，存成一张 DX×DY 的小图（描边用） */
+  function buildOutline(fine) {
+    const c = document.createElement('canvas');
+    c.width = DX; c.height = DY;
+    const g = c.getContext('2d');
+    const id = g.createImageData(DX, DY);
+    const d = id.data;
+    for (let y = 1; y < DY - 1; y++) {
+      for (let x = 1; x < DX - 1; x++) {
+        const i = y * DX + x;
+        if (!fine[i]) continue;
+        // 上下左右有任意一个不是固体 → 这是边界
+        if (fine[i - 1] && fine[i + 1] && fine[i - DX] && fine[i + DX]) continue;
+        const q = i * 4;
+        d[q] = 235; d[q + 1] = 240; d[q + 2] = 248; d[q + 3] = 255;
+      }
+    }
+    g.putImageData(id, 0, 0);
+    outlineCv = c;
   }
 
   function solidDFromFine(fine) {
@@ -1567,6 +1611,7 @@
   }
 
   let baseName = '';
+  let overlayParticles = QS.get('part') !== '0';   // 场视图是否叠粒子
 
   /** 从原图副本重新处理（换容差、开关去背景都走这里，不用重新选图） */
   function reprocessImage() {
