@@ -109,6 +109,20 @@
   <div id="drop">拖透明底 PNG 进来<br>或点下面</div>
   <button id="btnPick" class="primary">选择图片</button>
   <label class="chk"><input type="checkbox" id="autoBg" checked> 自动去背景</label>
+  <label>预设 <span class="val" id="vPreset">—</span></label>
+  <select id="presets">
+    <option value="">（不用预设）</option>
+    <option value="karman">卡门涡街（双柱）</option>
+    <option value="airfoil1">翼型</option>
+    <option value="airfoil_prop">翼型 + 螺旋桨</option>
+    <option value="rocks1">岩石 1</option>
+    <option value="rocks2">岩石 2</option>
+    <option value="triangle">三角</option>
+    <option value="swirl">漩涡体</option>
+    <option value="river">河道</option>
+    <option value="ufo">飞碟</option>
+    <option value="car2">跑车</option>
+  </select>
   <label class="val-row">容差 <span class="val" id="vBgTol">26</span></label>
   <input type="range" id="bgTol" min="8" max="60" step="2" value="26">
   <button id="btnDemo">内置形状（圆柱 / 翼型 / 汽车…）</button>
@@ -203,6 +217,7 @@
       <button data-k="none" class="on">粒子:关</button>
       <button data-k="stream">流线</button>
       <button data-k="streak">脉线</button>
+      <button data-k="random">随机</button>
     </div>
   </div>
   <button id="btnReset">重置流场</button>
@@ -216,7 +231,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.4 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.5 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -952,6 +967,41 @@
 
   /* ================= 粒子（脉线用） ================= */
   const particles = [];
+  // Random 模式：铺满全场的粒子点（参考 app 背景里那些白点）
+  const dust = [];
+  function dustInit() {
+    dust.length = 0;
+    const want = Math.round(NX * NY * 0.02);       // 约 2% 的格子数
+    for (let k = 0; k < want; k++) {
+      dust.push({
+        x: 1 + Math.random() * (NX - 2),
+        y: 1 + Math.random() * (NY - 2),
+        life: 1 + Math.random() * 2
+      });
+    }
+  }
+  function dustStep(dt2) {
+    for (let k = 0; k < dust.length; k++) {
+      const q = dust[k];
+      const i = clampCell(q.x | 0, q.y | 0);
+      q.x += u[i] * dt2;
+      q.y += v[i] * dt2;
+      q.life -= dt2;
+      // 出界 / 到寿命 / 撞到物体 → 在随机位置重生（场里永远是满的）
+      if (q.life <= 0 || q.x < 1 || q.x > NX - 2 || q.y < 1 || q.y > NY - 2 || solid[i]) {
+        q.x = 1 + Math.random() * (NX - 2);
+        q.y = 1 + Math.random() * (NY - 2);
+        q.life = 1 + Math.random() * 2;
+      }
+    }
+  }
+  function drawDust(g, alpha) {
+    g.fillStyle = `rgba(226,236,255,${alpha})`;
+    const sz = Math.max(0.55, 1.1 / RS);
+    for (let k = 0; k < dust.length; k++) {
+      g.fillRect(dust[k].x, dust[k].y, sz, sz);
+    }
+  }
 
   function spawnParticles() {
     const want = Math.max(1, Math.round(inject));
@@ -1308,7 +1358,11 @@
     }
 
     // ③ 累积层：流线 / 脉线
-    if (part === 'stream' || part === 'streak') {
+    if (part === 'random') {
+      ctx.globalCompositeOperation = 'lighter';
+      drawDust(ctx, 0.6 * bright);
+      ctx.globalCompositeOperation = 'source-over';
+    } else if (part === 'stream' || part === 'streak') {
       smokeCtx.globalCompositeOperation = 'source-over';
       smokeCtx.fillStyle = dragging ? 'rgba(5,7,13,0.22)'
         : (part === 'stream' ? 'rgba(5,7,13,0.06)' : 'rgba(5,7,13,0.035)');
@@ -1320,6 +1374,11 @@
       ctx.drawImage(smokeCv, 0, 0, NX, NY);
       ctx.globalCompositeOperation = 'source-over';
     } else if (phys !== 'none') {
+      if (part === 'random') {
+        ctx.globalCompositeOperation = 'lighter';
+        drawDust(ctx, 0.55 * bright);
+        ctx.globalCompositeOperation = 'source-over';
+      }
       // 场视图叠粒子（参考 app 的组合效果）
       if (overlayParticles) {
         ctx.globalCompositeOperation = 'lighter';
@@ -1835,6 +1894,14 @@
     }
   }
 
+  $('presets').onchange = (e) => {
+    const name = e.target.value;
+    $('vPreset').textContent = name || '—';
+    if (!name) return;
+    objScale = 0.55; objX = 0.25; objY = 0.5; objAngle = 0;
+    useImageURL('presets/' + name + '.png');   // 相对路径，APK/EXE 里也能用
+  };
+
   $('btnPick').onclick = () => $('file').click();
   $('file').onchange = (e) => { if (e.target.files[0]) useImageFile(e.target.files[0]); e.target.value = ''; };
   const SHAPES = ['circle', 'airfoil', 'teardrop', 'car', 'rock', 'twin'];
@@ -2017,6 +2084,7 @@
   $('segPart').onclick = (e) => {
     const b = e.target.closest('button'); if (!b) return;
     layers.particles = b.dataset.k;
+    if (layers.particles === 'random') dustInit();
     syncLayerUI(); resetSmoke();
   };
   syncLayerUI();
@@ -2026,10 +2094,15 @@
   $('meta').textContent = `网格 ${NX}×${NY} · ${mode} · 形状 ${SHAPE} · 风速 ${speed.toFixed(2)}`;
 
   if (QS.get('img')) useImageURL(QS.get('img'));
+  else if (QS.get('preset')) {
+    objScale = 0.55; objX = 0.25;
+    useImageURL('presets/' + QS.get('preset') + '.png');
+  }
 
   if (STILL > 0) {
     for (let k = 0; k < STILL; k++) {
       advance();
+      if (layers.particles === 'random') dustStep(dt);
       spawnParticles();
       stepParticles();
     }
@@ -2085,6 +2158,7 @@
     }
     function loop(now) {
       advance();
+      if (layers.particles === 'random') dustStep(dt);
       spawnParticles();
       stepParticles();
       smoothVel();

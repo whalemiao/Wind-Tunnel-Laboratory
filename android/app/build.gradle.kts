@@ -10,8 +10,8 @@ android {
         applicationId = "io.github.whalemiao.windtunnel"
         minSdk = 24
         targetSdk = 34
-        versionCode = 16
-        versionName = "0.3.4"
+        versionCode = 17
+        versionName = "0.3.5"
     }
 
     // debug 版用自动生成的调试密钥签名，能直接装（不需要自己配 keystore）
@@ -34,6 +34,7 @@ val syncWeb = tasks.register<Copy>("syncWebAssets") {
         include("index.html")
         include("test-tank.png")
         include("v1-lbm.html")
+        include("presets/*.png")
     }
     into(layout.projectDirectory.dir("src/main/assets"))
 }

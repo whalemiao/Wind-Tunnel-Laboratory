@@ -57,23 +57,21 @@ namespace WindTunnelLab
             Directory.CreateDirectory(dir);
 
             Assembly asm = Assembly.GetExecutingAssembly();
-            var map = new (string Resource, string File)[]
+            // 资源名形如 web.index.html / web.presets.car2.png
+            // → 解压到 web/index.html 与 web/presets/car2.png
+            foreach (string res in asm.GetManifestResourceNames())
             {
-                ("web.index.html", "index.html"),
-                ("web.test-tank.png", "test-tank.png"),
-                ("web.v1-lbm.html", "v1-lbm.html"),
-            };
-
-            foreach (var item in map)
-            {
-                using (Stream src = asm.GetManifestResourceStream(item.Resource))
+                if (!res.StartsWith("web.")) continue;
+                string rest = res.Substring(4);
+                int dot = rest.LastIndexOf('.');
+                if (dot <= 0) continue;
+                string rel = rest.Substring(0, dot).Replace('.', '/') + rest.Substring(dot);
+                string dst = Path.Combine(dir, rel.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(dst));
+                using (Stream srcStream = asm.GetManifestResourceStream(res))
+                using (FileStream fs = File.Create(dst))
                 {
-                    if (src == null) continue;   // 某个资源没打进来就跳过，页面还能跑
-                    string dst = Path.Combine(dir, item.File);
-                    using (FileStream fs = File.Create(dst))
-                    {
-                        src.CopyTo(fs);
-                    }
+                    srcStream.CopyTo(fs);
                 }
             }
 
