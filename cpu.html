@@ -1348,8 +1348,8 @@
     const cx = objX * NX * k;
     const cy = objY * NY * k;
     ctx.translate(cx, cy);
-    // 竖屏时整个场景转了 90°，物体要再补 90° 才能在屏幕上"正着站"
-    ctx.rotate((objAngle + (PORTRAIT ? 90 : 0)) * Math.PI / 180);
+    // 物体不跟着竖屏转：长轴永远顺着风。竖屏是「整体画面转 90°」，不是「物体转 90°」——后者会让车横过来堵死风道
+    ctx.rotate(objAngle * Math.PI / 180);
     ctx.drawImage(srcImg, -objGeom.w / 2 * k, -objGeom.h / 2 * k,
                   objGeom.w * k, objGeom.h * k);
     ctx.globalAlpha = 1;
@@ -1440,7 +1440,7 @@
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 5]);
       ctx.translate(objX * NX * RS, objY * NY * RS);
-      ctx.rotate((objAngle + (PORTRAIT ? 90 : 0)) * Math.PI / 180);
+      ctx.rotate(objAngle * Math.PI / 180);
       ctx.strokeRect(-objGeom.w / 2 * RS, -objGeom.h / 2 * RS,
                      objGeom.w * RS, objGeom.h * RS);
       ctx.restore();
@@ -1548,7 +1548,7 @@
     hg.save();
     hg.scale(MS, MS);                                  // 之后按网格坐标画
     hg.translate(objX * NX, objY * NY);
-    hg.rotate((objAngle + (PORTRAIT ? 90 : 0)) * Math.PI / 180);
+    hg.rotate(objAngle * Math.PI / 180);
     hg.drawImage(srcImg, -w / 2, -h / 2, w, h);
     hg.restore();
 

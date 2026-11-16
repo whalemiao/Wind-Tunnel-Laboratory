@@ -563,12 +563,10 @@
     const fit = Math.min(S * objScale / maskImg.width, S * objScale / maskImg.height) *
                 (wall ? 1 : 1);
     const w = maskImg.width * fit, h = maskImg.height * fit;
-    // 竖屏时场景整体转了 90°，物体要再补 90° 才能在屏幕上"正着站"
-    g.save();
-    g.translate(objX * S, objY * S);
-    if (PORTRAIT) g.rotate(Math.PI / 2);
-    g.drawImage(maskImg, -w / 2, -h / 2, w, h);
-    g.restore();
+    // 物体**不跟着竖屏转**：它待在物理坐标里，长轴永远顺着风。
+    // 竖屏时屏幕上看到的是整体（含物体）转了 90°，所以车头朝下、风打在车头上，气流从车身上下绕过去。
+    // （早先这里补过 90°，结果竖屏里车横过来变成一堵墙，把风道堵死）
+    g.drawImage(maskImg, objX * S - w / 2, objY * S - h / 2, w, h);
     const data = g.getImageData(0, 0, S, S).data;
     const out = new Uint8Array(S * S);
     const thr = wall ? 8 : 100;
