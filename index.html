@@ -216,7 +216,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.3 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.4 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -297,6 +297,18 @@
   let dye, dyeTmp, solidD, dyeCv, dyeCtx;
   // 掩码按网格的 MS 倍栅格化，再用"覆盖率"决定格子算不算固体 ——
   // 否则 320×180 的格子会把天线、薄支架这种细节整个吃掉
+  // 竖屏：物理仍是"风沿 +x"，只是画布整体转 90°（风从下往上）
+  // 竖屏：显式 ?orient=portrait 打开；?orient=landscape 强制横屏；
+  // 不指定时按窗口比例自动判断（手机上就是竖屏，和参考 app 一致）
+  const PORTRAIT = QS.get('orient') === 'portrait' ||
+    (QS.get('orient') !== 'landscape' && window.innerWidth < window.innerHeight);
+
+  /** 场景变换：网格坐标 → 画布像素。竖屏时是 90° 旋转 */
+  function sceneTransform(g) {
+    if (PORTRAIT) g.setTransform(0, -RS, -RS, 0, NY * RS, NX * RS);
+    else g.setTransform(RS, 0, 0, RS, 0, 0);
+  }
+
   const MS = 4;
   let cov = null;          // 每个物理格被物体覆盖的比例 0..1
   let fineMask = null;     // 染料级的固体掩码（高精度）
@@ -359,8 +371,9 @@
     const dpr = window.devicePixelRatio || 1;
     const targetW = Math.max(900, Math.min(2200, Math.round(stageW * dpr)));
     RS = Math.max(1, Math.min(6, Math.round(targetW / NX)));
-    cv.width = NX * RS; cv.height = NY * RS;
-    ctx.setTransform(RS, 0, 0, RS, 0, 0);
+    if (PORTRAIT) { cv.width = NY * RS; cv.height = NX * RS; }
+    else { cv.width = NX * RS; cv.height = NY * RS; }
+    sceneTransform(ctx);
 
     // 标量场先画在网格分辨率上，再放大（开插值 → 平滑渐变，不是马赛克）
     fieldCv = document.createElement('canvas');
@@ -389,9 +402,11 @@
     if (!st) return;
     const aw = Math.max(100, st.clientWidth - 16);
     const ah = Math.max(80, st.clientHeight - 16);
-    const k = Math.min(aw / NX, ah / NY);
-    cv.style.width = Math.floor(NX * k) + 'px';
-    cv.style.height = Math.floor(NY * k) + 'px';
+    const wUnits = PORTRAIT ? NY : NX;
+    const hUnits = PORTRAIT ? NX : NY;
+    const k = Math.min(aw / wUnits, ah / hUnits);
+    cv.style.width = Math.floor(wUnits * k) + 'px';
+    cv.style.height = Math.floor(hUnits * k) + 'px';
   }
   window.addEventListener('resize', () => fitCanvas());
 
@@ -1219,6 +1234,16 @@
    * 直接拿「原图」在画布像素坐标系里画物体 —— 不经过任何中间缩放，
    * 所以 1200×675 的图显示出来就是 1200 宽级别的清晰度。
    */
+  /** 切到"画布像素"坐标系（竖屏时是旋转后的） */
+  function pixelSpace(g) {
+    if (PORTRAIT) {
+      g.setTransform(0, -RS, -RS, 0, NY * RS, NX * RS);
+      g.scale(1 / RS, 1 / RS);
+    } else {
+      g.setTransform(1, 0, 0, 1, 0, 0);
+    }
+  }
+
   function drawObject() {
     // 掩码填充：画笔画的、图片掩码的固体都在这里显示出来
     if (maskCv) {
@@ -1229,12 +1254,16 @@
     if (!srcImg || !objGeom) return;
     const k = RS;                       // 画布像素 / 网格单元
     ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // 切到物理像素坐标
+    pixelSpace(ctx);                    // 统一走像素坐标（竖屏会旋转）
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.globalAlpha = 0.95;
-    ctx.translate(objX * NX * k, objY * NY * k);
-    ctx.rotate(objAngle * Math.PI / 180);
+    // 像素空间的轴顺序由 sceneTransform 决定，直接用网格坐标乘 RS 即可
+    const cx = objX * NX * k;
+    const cy = objY * NY * k;
+    ctx.translate(cx, cy);
+    // 竖屏时整个场景转了 90°，物体要再补 90° 才能在屏幕上"正着站"
+    ctx.rotate((objAngle + (PORTRAIT ? 90 : 0)) * Math.PI / 180);
     ctx.drawImage(srcImg, -objGeom.w / 2 * k, -objGeom.h / 2 * k,
                   objGeom.w * k, objGeom.h * k);
     ctx.globalAlpha = 1;
@@ -1243,9 +1272,9 @@
     // 白色描边 + 辉光（参考 app 的观感：物体是"亮边黑体"，不是实心贴图）
     if (outlineCv) {
       ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      pixelSpace(ctx);
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = 0.55 * (1 / Math.max(1, 1));
+      ctx.globalAlpha = 0.55;
       ctx.shadowColor = 'rgba(180,220,255,0.9)';
       ctx.shadowBlur = Math.max(3, RS * 2.2);
       ctx.drawImage(outlineCv, 0, 0, NX * RS, NY * RS);
@@ -1316,7 +1345,7 @@
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 5]);
       ctx.translate(objX * NX * RS, objY * NY * RS);
-      ctx.rotate(objAngle * Math.PI / 180);
+      ctx.rotate((objAngle + (PORTRAIT ? 90 : 0)) * Math.PI / 180);
       ctx.strokeRect(-objGeom.w / 2 * RS, -objGeom.h / 2 * RS,
                      objGeom.w * RS, objGeom.h * RS);
       ctx.restore();
@@ -1388,7 +1417,10 @@
     if (!srcImg) return;
 
     // 等比缩放到网格（长边占 85%）
-    const fit = Math.min(NX * 0.9 / srcImg.width, NY * 0.9 / srcImg.height);
+    // 竖屏时网格 x 是屏幕纵向、y 是横向，所以宽高要按交换后的边界算
+    const fitW = PORTRAIT ? NY : NX;
+    const fitH = PORTRAIT ? NX : NY;
+    const fit = Math.min(fitW * 0.9 / srcImg.width, fitH * 0.9 / srcImg.height);
     const w = srcImg.width * fit * objScale;
     const h = srcImg.height * fit * objScale;
 
@@ -1421,7 +1453,7 @@
     hg.save();
     hg.scale(MS, MS);                                  // 之后按网格坐标画
     hg.translate(objX * NX, objY * NY);
-    hg.rotate(objAngle * Math.PI / 180);
+    hg.rotate((objAngle + (PORTRAIT ? 90 : 0)) * Math.PI / 180);
     hg.drawImage(srcImg, -w / 2, -h / 2, w, h);
     hg.restore();
 
@@ -1874,10 +1906,13 @@
   let dragging = false, dragStart = null;
   function toGrid(e) {
     const r = cv.getBoundingClientRect();
-    return {
-      x: ((e.clientX - r.left) / r.width) * NX,
-      y: ((e.clientY - r.top) / r.height) * NY
-    };
+    const u = (e.clientX - r.left) / r.width;    // 0..1 屏幕横向
+    const v = (e.clientY - r.top) / r.height;    // 0..1 屏幕纵向
+    if (PORTRAIT) {
+      // 竖屏：屏幕横向对应网格 y，纵向对应网格 x（风从下往上）
+      return { x: (1 - v) * NX, y: (1 - u) * NY };
+    }
+    return { x: u * NX, y: v * NY };
   }
   cv.addEventListener('pointerdown', (e) => {
     // 手机上必须阻止默认的滚动/缩放，否则 pointermove 会被浏览器接管
