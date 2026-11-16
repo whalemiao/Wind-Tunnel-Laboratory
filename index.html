@@ -840,7 +840,7 @@
         // RK2（中点法）：先取当前点速度，走半步再取一次，能明显减少"折线感"
         sampleUF(x, y, _s1);
         let sp1 = Math.hypot(_s1[0], _s1[1]);
-        if (sp1 < 0.3) { window.__b_sp = (window.__b_sp || 0) + 1; break; }
+        if (sp1 < 0.06) { window.__b_sp = (window.__b_sp || 0) + 1; break; }  // 低速别急着断线，否则涡心进不去
         sampleUF(x + (_s1[0] / sp1) * Hh * 0.5, y + (_s1[1] / sp1) * Hh * 0.5, _s2);
         let sp2 = Math.hypot(_s2[0], _s2[1]);
         if (sp2 < 0.3) break;
