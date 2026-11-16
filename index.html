@@ -108,7 +108,9 @@
 
   <div id="drop">拖透明底 PNG 进来<br>或点下面</div>
   <button id="btnPick" class="primary">选择图片</button>
-  <label class="chk"><input type="checkbox" id="autoBg" checked> 自动去背景（按边缘颜色）</label>
+  <label class="chk"><input type="checkbox" id="autoBg" checked> 自动去背景</label>
+  <label class="val-row">容差 <span class="val" id="vBgTol">26</span></label>
+  <input type="range" id="bgTol" min="8" max="60" step="2" value="26">
   <button id="btnDemo">内置形状（圆柱 / 翼型 / 汽车…）</button>
 
   <div class="group">
@@ -203,7 +205,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.2.2 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.2.3 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -278,6 +280,7 @@
   const MS = 4;
   let cov = null;          // 每个物理格被物体覆盖的比例 0..1
   let fineMask = null;     // 染料级的固体掩码（高精度）
+  let baseCanvas = null;   // 导入的原图副本（方便重新处理）
   let us, vs;          // 平滑后的速度场（仅用于流线积分，防止锯齿状抽动）
   let RS = 2;          // 渲染倍率（画布 = 网格 × RS）
   let fieldCv = null, fieldCtx = null;   // 标量场离屏画布
@@ -291,6 +294,7 @@
     circle: '圆柱', airfoil: '翼型', teardrop: '水滴',
     car: '汽车', rock: '岩石', twin: '双圆柱'
   };
+  let bgTol = parseInt(QS.get('bgtol') || '26', 10) || 26;   // 抠背景容差
   let flowInited = false;
   let simT = 0;            // 模拟时间（秒），给入口扰动用  // 第一次建掩码要灌满均匀来流，之后拖动才不重置
   let brush = 4;       // 笔刷半径（格子）
@@ -1210,11 +1214,9 @@
       const c = document.createElement('canvas');
       c.width = im.naturalWidth; c.height = im.naturalHeight;
       c.getContext('2d').drawImage(im, 0, 0);
-      let stripped = 0;
-      if ($('autoBg') && $('autoBg').checked) stripped = stripBackground(c);
-      loadFromCanvas(c);
-      $('meta').textContent = `已加载 ${url} · 原图 ${im.naturalWidth}×${im.naturalHeight}` +
-        (stripped > 0.02 ? ` · 已抠背景 ${(stripped * 100).toFixed(0)}%` : '');
+      baseCanvas = c;
+      baseName = url;
+      reprocessImage();
       rerenderIfStill();
     };
     im.onerror = () => { $('meta').textContent = '图片加载失败: ' + url; };
@@ -1228,13 +1230,14 @@
    * 直接用 alpha 当掩码就会变成一个矩形，气流全被挡住 ——
    * 表现就是"纯色块""车头前方气流空白"。
    */
-  function stripBackground(canvas) {
+  function stripBackground(canvas, tol) {
     const g = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
     const id = g.getImageData(0, 0, W, H);
     const d = id.data;
+    tol = tol || 26;
 
-    // 取四角 + 四边中点的中位色作为"背景色"
+    // 背景色 = 四角 + 四边中点的中位数
     const pick = [];
     for (const [x, y] of [[0,0],[W-1,0],[0,H-1],[W-1,H-1],[W>>1,0],[W>>1,H-1],[0,H>>1],[W-1,H>>1]]) {
       const q = (y * W + x) * 4;
@@ -1242,15 +1245,37 @@
     }
     pick.sort((a, b) => (a[0]+a[1]+a[2]) - (b[0]+b[1]+b[2]));
     const bg = pick[pick.length >> 1];
-    const tol = 42 * 42;
 
-    const match = (q) => {
-      if (d[q + 3] < 8) return true;                    // 本来就透明
+    const dist2 = (q) => {
       const dr = d[q] - bg[0], dg = d[q+1] - bg[1], db = d[q+2] - bg[2];
-      return dr*dr + dg*dg + db*db < tol;
+      return dr*dr + dg*dg + db*db;
     };
+    const T2 = tol * tol;
 
-    // 四边泛洪（BFS，只删连成一片的背景，不会吃掉物体内部的同色高光）
+    // 关键防误删：如果某个像素在**任意方向**上紧挨着与背景色差很多的像素，
+    // 说明它挨着物体轮廓（或本身就是细结构），一律不删。
+    // 之前没有这一步，深色车身上的天线、轮毂边这种"和背景同色又连着物体"的地方会被吃掉。
+    const edgeGuard = new Uint8Array(W * H);
+    const EDGE2 = (tol * 2.2) * (tol * 2.2);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const idx = y * W + x, q = idx * 4;
+        if (dist2(q) > T2) continue;                 // 本来就不是背景色，不管
+        let guard = false;
+        for (let dy = -1; dy <= 1 && !guard; dy++) {
+          const yy = y + dy; if (yy < 0 || yy >= H) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx; if (xx < 0 || xx >= W) continue;
+            if (dx === 0 && dy === 0) continue;
+            const qq = (yy * W + xx) * 4;
+            if (dist2(qq) > EDGE2) { guard = true; break; }
+          }
+        }
+        if (guard) edgeGuard[idx] = 1;
+      }
+    }
+
+    // 从四边泛洪
     const seen = new Uint8Array(W * H);
     const stack = [];
     for (let x = 0; x < W; x++) { stack.push(x); stack.push((H - 1) * W + x); }
@@ -1261,7 +1286,8 @@
       if (seen[idx]) continue;
       seen[idx] = 1;
       const q = idx * 4;
-      if (!match(q)) continue;
+      const isBg = d[q + 3] < 8 || (dist2(q) < T2 && !edgeGuard[idx]);
+      if (!isBg) continue;
       d[q + 3] = 0;
       removed++;
       const x = idx % W, y = (idx / W) | 0;
@@ -1271,7 +1297,25 @@
       if (y < H - 1) stack.push(idx + W);
     }
     g.putImageData(id, 0, 0);
-    return removed / (W * H);      // 返回抠掉的比例，用来给用户一个反馈
+    return removed / (W * H);
+  }
+
+  let baseName = '';
+
+  /** 从原图副本重新处理（换容差、开关去背景都走这里，不用重新选图） */
+  function reprocessImage() {
+    if (!baseCanvas) return;
+    const c = document.createElement('canvas');
+    c.width = baseCanvas.width;
+    c.height = baseCanvas.height;
+    c.getContext('2d').drawImage(baseCanvas, 0, 0);
+
+    let stripped = 0;
+    if ($('autoBg') && $('autoBg').checked) stripped = stripBackground(c, bgTol);
+    loadFromCanvas(c);
+    $('meta').textContent = `${baseName} · 原图 ${baseCanvas.width}×${baseCanvas.height}` +
+      (stripped > 0.02 ? ` · 已抠背景 ${(stripped * 100).toFixed(0)}%` : ' · 未去背景');
+    rerenderIfStill();
   }
 
   function useImageFile(file) {
@@ -1283,14 +1327,9 @@
       c.height = im.naturalHeight;
       c.getContext('2d').drawImage(im, 0, 0);
 
-      let stripped = 0;
-      if ($('autoBg') && $('autoBg').checked) stripped = stripBackground(c);
-
-      loadFromCanvas(c);
-      $('meta').textContent = `${file.name} · 原图 ${im.naturalWidth}×${im.naturalHeight}` +
-        (stripped > 0.02 ? ` · 已抠背景 ${(stripped * 100).toFixed(0)}%` : '') +
-        ` · 不透明像素 = 实体`;
-      rerenderIfStill();
+      baseCanvas = c;
+      baseName = file.name;
+      reprocessImage();
     };
     im.src = URL.createObjectURL(file);
   }
@@ -1441,6 +1480,11 @@
     $('meta').textContent = t === 'none' ? '拖动可移动物体' : (t === 'brush' ? '在画布上涂抹 = 加实体' : '在画布上涂抹 = 擦除实体');
   };
   $('brush').oninput = (e) => { brush = +e.target.value; $('vBrush').textContent = brush; };
+  $('bgTol').oninput = (e) => {
+    bgTol = +e.target.value; $('vBgTol').textContent = bgTol;
+    if (baseCanvas) reprocessImage();          // 边拖边看效果
+  };
+  if ($('autoBg')) $('autoBg').onchange = () => { if (baseCanvas) reprocessImage(); };
   $('bright').oninput = (e) => { bright = +e.target.value; $('vBright').textContent = bright.toFixed(2); };
 
   $('px').oninput = (e) => { objX = +e.target.value / 100; rebuildObject(); syncObjUI(); };
