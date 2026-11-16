@@ -20,11 +20,39 @@
 一个**纯前端的 2D 不可压流体模拟**，专门用来做"风洞可视化"：
 
 - 上传的图片 → 用 alpha 通道当**固体边界**
-- 求解 **Navier–Stokes**（Stable Fluids，Stam 1999）
-- 六种可视化：流线 / 脉线 / 条纹烟 / 涡量 / 速度 / 压强
+- 求解 **Navier–Stokes**（Stable Fluids，Stam 1999），**CPU 和 GPU 两套求解器**
+- 可视化：流线 / 脉线 / 条纹烟 / 涡量 / 速度 / 压强
 - 可以调风速、黏性、涡量强度、烟迹长度、亮度、网格分辨率
 
 **没有依赖、没有构建步骤**：一个 `index.html` 打开就能跑。
+
+## 两个求解器
+
+`index.html` 只做一件事：**探测设备能力，然后选一个求解器**。
+
+```
+index.html ──有 WebGL2 + EXT_color_buffer_float──→ gpu/gpu-fluid.html   GPU 版
+           └─没有（或 ?cpu=1）──────────────────→ cpu.html            CPU 版
+```
+
+| | GPU 版 `gpu/gpu-fluid.html` | CPU 版 `cpu.html` |
+| --- | --- | --- |
+| 求解器 | 全部在着色器里（浮点渲染目标 ping-pong） | JS，Stable Fluids |
+| 网格 | 512² 起，可到 1024² | 240~800（可调） |
+| 显示层 | 烟 / 速度 / 压力 / 粒子 | 流线 / 脉线 / 条纹烟 / 涡量 / 速度 / 压强 |
+| 速度 | 同分辨率下高一个量级 | 640×360 以上开始掉帧 |
+| 兼容性 | 要 WebGL2 + 浮点渲染 | 有 Canvas 2D 就行 |
+| 调试 | `?warm=N` 确定性探针（见 [gpu/README.md](gpu/README.md)） | `?still=` / `?dbg=1` |
+
+GPU 版在跑不动或不被支持时会**自动退回** CPU 版；想手动对比就加 `?cpu=1`。
+
+| GPU 版 · 条纹烟 | GPU 版 · 粒子（速度方向短线） |
+| --- | --- |
+| ![条纹烟](shots/gpu-stripes.png) | ![粒子](shots/gpu-view-particles.png) |
+
+| GPU 版 · 速度 | GPU 版 · 压力 |
+| --- | --- |
+| ![速度](shots/gpu-view-vel.png) | ![压力](shots/gpu-view-pressure.png) |
 
 ## 用法
 
@@ -39,6 +67,8 @@
 - 「内置形状」每点一次循环切换：圆柱 → 翼型 → 水滴
 
 ### URL 参数
+
+（下面是 CPU 版 `cpu.html` 的参数；GPU 版的在 [gpu/README.md](gpu/README.md)，最常用的是 `?warm=N` 和 `?view=`）
 
 ```
 ?mode=stream|streak|stripes|curl|speed|pressure
@@ -64,7 +94,8 @@
 
 | 问题 | 影响 | 状态 |
 | --- | --- | --- |
-| 手机高分辨率（640×360 以上）帧率掉到 20-25 | 拖动时会觉得卡 | 可接受，降分辨率即可；后续考虑自适应降级 |
+| 手机高分辨率（640×360 以上）帧率掉到 20-25 | 拖动时会觉得卡 | CPU 版的问题；GPU 版同分辨率下高一个量级，但**还没在真机上验过** |
+| GPU 版显示层比 CPU 版少（缺流线/涡量） | 少两种看法 | 见 [gpu/README.md](gpu/README.md) 的下一步 |
 | 气动力只是量级可信 | `Cd` 绝对值不能当风洞数据用 | 有意为之，界面已标注 |
 | 涡街在低黏性下会"糊"成一片 | 看不出清晰涡对 | 需要更高网格 + 更久演化 |
 | WebView 壳不支持系统分享 | 不能一键把当前画面发给别人 | 计划加"保存这一帧"导出 |
@@ -141,7 +172,11 @@ Cl ≈ ∫ u·v      dy / (0.5·U²·H)
 ## 文件
 
 ```
-index.html          主程序（Stable Fluids 版）
+index.html          入口：探测能力，选 GPU 版或 CPU 版
+cpu.html            主程序 · CPU 版（Canvas 2D + JS 求解器，兼容旧设备）
+gpu/gpu-fluid.html  主程序 · GPU 版（WebGL2 着色器求解，四层显示 + 粒子）
+gpu/README.md       GPU 版交接单：状态、探针用法、已知坑、下一步
+gpu/probe.ps1       数值探针：无头浏览器跑 ?warm=N 后读回一行数字
 v1-lbm.html         第一版：格子玻尔兹曼（保留对比，会有"Q弹"感）
 test-tank.png       示例素材（1191×515，透明底）
 shots/              截图
@@ -231,7 +266,8 @@ MIT
 ## 安卓 APK
 
 `android/` 是一个最小的 WebView 壳（Java，无 Kotlin），构建前会把仓库根的
-`index.html` / `test-tank.png` 拷进 `assets/` —— **网页只维护一份**。
+`index.html` / `cpu.html` / `gpu/gpu-fluid.html` / `test-tank.png` / `presets/` 拷进 `assets/`
+—— **网页只维护一份**。
 
 本地构建（需要 Android SDK + JDK 17）：
 

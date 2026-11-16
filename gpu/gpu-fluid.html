@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>GPU 风洞实验室（移植中）</title>
+<title>风洞实验室 · GPU 求解（WebGL2）</title>
 <style>
   html, body { margin: 0; height: 100%; background: #05070d; overflow: hidden; }
   #cv { display: block; width: 100%; height: 100%; }
@@ -44,12 +44,20 @@
   body.collapsed #hud { left: 12px; }
   body.collapsed #btnPanel { left: 10px; }
   #hud {
-    position: fixed; left: 250px; top: 12px; color: #9fb0cc;
+    position: fixed; left: 278px; top: 12px; color: #9fb0cc;
     font: 12px/1.6 ui-monospace, Consolas, monospace; pointer-events: none;
     text-shadow: 0 1px 2px #000;
   }
   #err { position: fixed; inset: 0; padding: 20px; color: #ffb4b4;
          background: #180a0d; font: 12px/1.5 monospace; white-space: pre-wrap; display: none; }
+  /* 窄屏（手机/竖屏）：侧栏变抽屉浮在画布上，不再挤占画布宽度 */
+  @media (max-width: 820px) {
+    body:not(.collapsed) #cv { margin-left: 0; width: 100%; }
+    #side { box-shadow: 8px 0 24px rgba(0,0,0,.55); }
+    #hud { left: 12px; top: 54px; font-size: 10.5px; }
+    #btnPanel { left: 10px; }
+    body.collapsed #hud { left: 12px; }
+  }
 </style>
 </head>
 <body>
@@ -88,11 +96,14 @@
   <div class="seg" id="view">
     <button data-v="dye" class="on">烟</button>
     <button data-v="vel">速度</button>
+    <button data-v="pressure">压力</button>
+    <button data-v="particles">粒子</button>
   </div>
 
   <div class="hint">拖动画面移动障碍物 · 双击复位</div>
 </aside>
-<div id="hud">WebGL2 GPU 求解器 · 移植中</div>
+<div id="hud">WebGL2 GPU 求解器 · 加载中…</div>
+<pre id="dbg" style="display:none"></pre>
 <div id="err"></div>
 <script>
 "use strict";
@@ -112,11 +123,21 @@
   let INFLOW = parseFloat(QS.get('inflow') || '0.35');
   const VIEW_VEL = QS.get('view') === 'vel';
 
-  const gl = cv.getContext('webgl2', { alpha: false, antialias: false, depth: false });
+  // ?keepbuffer=1：保留绘制缓冲。无头浏览器截图默认只能拍到最后一次绘制（rAF 里的不算），
+  // 开了它才能截到"主循环跑了几秒之后"的画面
+  const gl = cv.getContext('webgl2', {
+    alpha: false, antialias: false, depth: false,
+    preserveDrawingBuffer: QS.get('keepbuffer') === '1'
+  });
   if (!gl) fail('这个环境不支持 WebGL2');
   const extF = gl.getExtension('EXT_color_buffer_float');
   const extL = gl.getExtension('OES_texture_float_linear');
   if (!extF) fail('缺少 EXT_color_buffer_float，无法做 GPGPU');
+
+  // 竖屏：显式 ?orient=portrait / landscape；不指定就按窗口比例自动判断
+  const ORIENT_Q = QS.get('orient');
+  let PORTRAIT = ORIENT_Q === 'portrait' ||
+    (ORIENT_Q !== 'landscape' && window.innerWidth < window.innerHeight);
 
   /* ---------------- 着色器 ---------------- */
   const VS = `#version 300 es
@@ -192,7 +213,7 @@
     float B = texture(uPressure, vUv - vec2(0.0,texel.y)).x;
     float T = texture(uPressure, vUv + vec2(0.0,texel.y)).x;
     vec2 v = texture(uVel, vUv).xy - 0.5 * vec2(R - L, T - B);
-    // 进出口保持 Dirichlet：入口吹入、出口自由流出
+    // 进出口都用 Dirichlet 吹入：试过出口零梯度，u 会从 0.35 沿程掉到 0.20（见 gpu/README 的实验记录）
     if (vUv.x < 0.03 || vUv.x > 0.97) v = vec2(uInflow, 0.0);
     fragColor = vec4(v, 0.0, 1.0);
   }`;
@@ -272,19 +293,127 @@
   uniform sampler2D uDye;
   uniform sampler2D uVel;
   uniform sampler2D uSolid;
+  uniform sampler2D uPressure;
+  uniform sampler2D uMask;
   uniform int mode;
+  uniform int uPortrait;
+  uniform float uMaxSpeed;
+  uniform float uPScale;
+
+  // 速度用的彩虹色标（蓝→青→绿→黄→红）
+  vec3 cmap(float t){
+    t = clamp(t, 0.0, 1.0);
+    vec3 c0 = vec3(0.03,0.07,0.28);
+    vec3 c1 = vec3(0.05,0.55,0.90);
+    vec3 c2 = vec3(0.15,0.85,0.55);
+    vec3 c3 = vec3(0.98,0.85,0.15);
+    vec3 c4 = vec3(0.95,0.22,0.10);
+    if (t < 0.25) return mix(c0, c1, t / 0.25);
+    if (t < 0.50) return mix(c1, c2, (t - 0.25) / 0.25);
+    if (t < 0.75) return mix(c2, c3, (t - 0.50) / 0.25);
+    return mix(c3, c4, (t - 0.75) / 0.25);
+  }
+  // 压力用的发散色标（负压偏蓝、正压偏红）
+  vec3 dcmap(float t){
+    t = clamp(t, -1.0, 1.0);
+    if (t < 0.0) return mix(vec3(0.92,0.96,1.00), vec3(0.06,0.20,0.55), -t);
+    return mix(vec3(1.00,0.96,0.86), vec3(0.72,0.12,0.08), t);
+  }
+
   void main(){
-    if (texture(uSolid, vUv).r > 0.5) { fragColor = vec4(0.05,0.06,0.09,1.0); return; }
+    // 竖屏：物理不动，只把采样坐标转 90°（风从下往上），和 CPU 版 index.html 的约定一致
+    vec2 fuv = uPortrait == 1 ? vec2(vUv.y, 1.0 - vUv.x) : vUv;
+    if (texture(uSolid, fuv).r > 0.5) {
+      // 固体：把原图的颜色贴回去，别显示成一个纯黑剪影
+      vec4 m = texture(uMask, fuv);
+      float k = mode == 3 ? 0.45 : 1.0;      // 粒子层里把物体压暗，别抢亮线的注意力
+      fragColor = vec4(mix(vec3(0.05,0.06,0.09), m.rgb * k, clamp(m.a, 0.0, 1.0)), 1.0);
+      return;
+    }
     vec3 c;
     if (mode == 0) {
-      float d = clamp(texture(uDye, vUv).x, 0.0, 1.0);
-      c = mix(vec3(0.05,0.10,0.20), vec3(0.85,0.92,1.0), d);
+      // 条纹烟（染料）
+      float d = clamp(texture(uDye, fuv).x, 0.0, 1.0);
+      c = mix(vec3(0.04,0.07,0.16), vec3(0.88,0.94,1.0), d);
+    } else if (mode == 1) {
+      // 速度
+      float sp = length(texture(uVel, fuv).xy) / max(uMaxSpeed, 1e-4);
+      c = cmap(sp);
+    } else if (mode == 2) {
+      // 压力：和 CPU 版一样按「全场的对称最大值」自动对比度（零线居中）
+      c = dcmap(texture(uPressure, fuv).x * uPScale);
     } else {
-      vec2 v = texture(uVel, vUv).xy;
-      float sp = clamp(length(v) * 6.0, 0.0, 1.0);
-      c = mix(vec3(0.10,0.15,0.35), vec3(1.0,0.55,0.15), sp);
+      // 粒子层：淡烟当背景，亮线由线段画在上面
+      float d = clamp(texture(uDye, fuv).x, 0.0, 1.0);
+      c = mix(vec3(0.02,0.03,0.06), vec3(0.16,0.22,0.34), d * 0.6);
     }
     fragColor = vec4(c, 1.0);
+  }`;
+
+  /* ---------------- 粒子（GPU 状态纹理） ---------------- */
+  const FS_PARTICLE_INIT = HEAD + `
+  uniform float uSeed;
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7)) + uSeed) * 43758.5453); }
+  void main(){
+    // x,y = 位置，z = 年龄，w = 个体随机
+    fragColor = vec4(mix(0.02, 0.98, hash(vUv)),
+                     mix(0.02, 0.98, hash(vUv + 19.7)),
+                     hash(vUv + 3.3) * 4.0,
+                     hash(vUv + 7.1));
+  }`;
+
+  const FS_PARTICLE = HEAD + `
+  uniform sampler2D uState;
+  uniform sampler2D uVel;
+  uniform sampler2D uSolid;
+  uniform float dt;
+  uniform float uLife;
+  uniform float uSeed;
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7)) + uSeed) * 43758.5453); }
+  void main(){
+    vec4 s = texture(uState, vUv);
+    vec2 pos = s.xy;
+    float age = s.z + dt;
+    vec2 v = texture(uVel, clamp(pos, 0.001, 0.999)).xy;
+    pos += v * dt;
+    // 每个粒子寿命不同（s.w 是个体随机数），否则会同一批出生、同一批死 → 出现"浪"一样的团块
+    float lifeMax = uLife * (0.35 + 0.65 * s.w);
+    // 出界 / 进固体 / 太老 → 在全场随机位置重新投种（不是只在入口，避免左边越积越密）
+    float blocked = texture(uSolid, clamp(pos, 0.0, 1.0)).r;
+    if (pos.x > 1.0 || pos.x < -0.02 || age > lifeMax || blocked > 0.5) {
+      pos = vec2(hash(vUv + uSeed), hash(vUv + uSeed + 41.3));
+      age = 0.0;
+    }
+    fragColor = vec4(pos, age, s.w);
+  }`;
+
+  // 每个粒子画成一条沿当地速度方向的短线（尾巴用 pos - v*streak 现算，不用额外存历史位置）
+  const VS_STREAKS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uState;
+  uniform sampler2D uVel;
+  uniform int uPW;
+  uniform float uLife;
+  uniform float uStreak;
+  out float vAlpha;
+  void main(){
+    int idx = gl_VertexID / 2;          // 一个粒子两个顶点
+    int head = gl_VertexID % 2;         // 0=头 1=尾
+    ivec2 c = ivec2(idx % uPW, idx / uPW);
+    vec4 s = texelFetch(uState, c, 0);
+    vec2 v = texture(uVel, clamp(s.xy, 0.001, 0.999)).xy;
+    vec2 p = s.xy - v * uStreak * float(head);
+    float life = 1.0 - clamp(s.z / uLife, 0.0, 1.0);
+    vAlpha = life * (1.0 - 0.85 * float(head));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+  }`;
+
+  const FS_STREAKS = `#version 300 es
+  precision highp float;
+  in float vAlpha;
+  out vec4 fragColor;
+  void main(){
+    fragColor = vec4(vec3(0.60, 0.85, 1.0) * vAlpha, vAlpha);
   }`;
 
   /* ---------------- GL 工具 ---------------- */
@@ -296,9 +425,9 @@
       fail('着色器编译失败：\n' + gl.getShaderInfoLog(sh) + '\n\n' + src.split('\n').slice(0, 30).join('\n'));
     return sh;
   }
-  function program(fs) {
+  function program(fs, vsSrc) {
     const p = gl.createProgram();
-    gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc || VS));
     gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fail('链接失败：\n' + gl.getProgramInfoLog(p));
@@ -342,16 +471,23 @@
   const S = SIM;
   const vel = [makeTarget(S, S, gl.RG16F, gl.RG, gl.HALF_FLOAT),
                makeTarget(S, S, gl.RG16F, gl.RG, gl.HALF_FLOAT)];
-  let velIdx = 0;
   const pressure = [makeTarget(S, S, gl.R16F, gl.RED, gl.HALF_FLOAT),
                     makeTarget(S, S, gl.R16F, gl.RED, gl.HALF_FLOAT)];
   const divergence = makeTarget(S, S, gl.R16F, gl.RED, gl.HALF_FLOAT);
   const dye = [makeTarget(S, S, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT),
                makeTarget(S, S, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT)];
-  let dyeIdx = 0;
   const solid = makeTarget(S, S, gl.R8, gl.RED, gl.UNSIGNED_BYTE);
+  // 掩码的彩色版本：只用于显示（把原图贴回固体格），不参与物理
+  const maskColor = makeTarget(S, S, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
   [vel[0], vel[1], pressure[0], pressure[1], dye[0], dye[1]].forEach(clearTarget);
   clearTarget(solid);
+
+  // 粒子状态纹理：PW×PW 个粒子，x,y=位置 z=年龄 w=个体随机
+  const PW = Math.max(16, Math.min(256, parseInt(QS.get('pn') || '96', 10)));
+  const PCOUNT = PW * PW;
+  const particles = [makeTarget(PW, PW, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT),
+                     makeTarget(PW, PW, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT)];
+  particles.forEach(clearTarget);
 
   // 先建 program（fillVel 要用），再初始化速度场
   const P = {
@@ -365,6 +501,9 @@
     advectDye: program(FS_ADVECT_DYE),
     inlet: program(FS_INLET),
     display: program(FS_DISPLAY),
+    particleInit: program(FS_PARTICLE_INIT),
+    particle: program(FS_PARTICLE),
+    points: program(FS_STREAKS, VS_STREAKS),
   };
 
   // 初始化速度场：均匀来流
@@ -385,12 +524,20 @@
   fillVel(vel[0], 0.35);
   fillVel(vel[1], 0.35);
 
+  // 粒子初始位置撒满全场
+  function initParticles() {
+    for (const t of particles) {
+      blit(t, P.particleInit, (u) => { gl.uniform1f(u.uSeed, Math.random() * 100); });
+    }
+  }
+
   // 全屏四边形
   function blit(target, prog, setup) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
     gl.viewport(0, 0, target ? target.w : cv.width, target ? target.h : cv.height);
     gl.useProgram(prog.p);
-    if (prog.u.texel) gl.uniform2f(prog.u.texel, 1 / S, 1 / S);
+    if (prog.u.texel) gl.uniform2f(prog.u.texel,
+      1 / (target ? target.w : cv.width), 1 / (target ? target.h : cv.height));
     if (setup) setup(prog.u);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
@@ -416,7 +563,12 @@
     const fit = Math.min(S * objScale / maskImg.width, S * objScale / maskImg.height) *
                 (wall ? 1 : 1);
     const w = maskImg.width * fit, h = maskImg.height * fit;
-    g.drawImage(maskImg, objX * S - w / 2, objY * S - h / 2, w, h);
+    // 竖屏时场景整体转了 90°，物体要再补 90° 才能在屏幕上"正着站"
+    g.save();
+    g.translate(objX * S, objY * S);
+    if (PORTRAIT) g.rotate(Math.PI / 2);
+    g.drawImage(maskImg, -w / 2, -h / 2, w, h);
+    g.restore();
     const data = g.getImageData(0, 0, S, S).data;
     const out = new Uint8Array(S * S);
     const thr = wall ? 8 : 100;
@@ -440,32 +592,68 @@
     }
     gl.bindTexture(gl.TEXTURE_2D, solid.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S, S, 0, gl.RED, gl.UNSIGNED_BYTE, out);
+    // 同一张画布也当颜色贴图传上去（显示固体格用）
+    gl.bindTexture(gl.TEXTURE_2D, maskColor.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, c);
     hasMask = true;
   }
 
-  function loadMaskFromUrl(url) {
-    const im = new Image();
-    im.onload = () => { maskImg = im; uploadMask(); };
-    im.onerror = () => { hud.textContent = '掩码加载失败: ' + url; };
-    im.src = url;
+  function tryLoadImage(url) {
+    return new Promise((resolve) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => resolve(null);
+      im.src = url;
+    });
   }
 
-  const maskUrl = QS.get('img') || (QS.get('preset') ? 'presets/' + QS.get('preset') + '.png' : '');
-  if (maskUrl) loadMaskFromUrl(maskUrl);
+  /** 掩码就绪的 promise：warm 必须等它，否则预跑时场上没有障碍物 */
+  let maskReady = Promise.resolve();
+
+  /** 依次尝试若干个地址（gpu/ 下和仓库根下各一份，避免目录搬家就 404） */
+  function loadMaskWithFallback(urls) {
+    maskReady = (async () => {
+      for (const u of urls) {
+        const im = await tryLoadImage(u);
+        if (im) { maskImg = im; uploadMask(); hud.dataset.mask = u; return; }
+      }
+      hud.textContent = '掩码加载失败: ' + urls.join(' / ');
+    })();
+    return maskReady;
+  }
+
+  const presetName = QS.get('preset');
+  const imgUrl = QS.get('img');
+  const maskUrls = imgUrl ? [imgUrl]
+    : presetName ? ['../presets/' + presetName + '.png', 'presets/' + presetName + '.png']
+    : [];
+  if (maskUrls.length) loadMaskWithFallback(maskUrls);
 
   /* ---------------- 主循环 ---------------- */
   // 显式 ping-pong：每一步明确"读哪个、写哪个"，避免翻转计数出 bug
   let vA = vel[0], vB = vel[1];
   let pA = pressure[0], pB = pressure[1];
   let dA = dye[0], dB = dye[1];
+  let pa = particles[0], pb = particles[1];
+  const VIEW_IDS = { dye: 0, vel: 1, pressure: 2, particles: 3 };
+  let VIEW_MODE = VIEW_IDS[QS.get('view')] === undefined ? 0 : VIEW_IDS[QS.get('view')];
+
+  const PARTICLE_LIFE = parseFloat(QS.get('plife') || '3.5');
+  const STREAK_LEN = parseFloat(QS.get('streak') || '0.09');   // 短线的长度（按速度×秒数算）
+
+  const FIXED_DT = 1 / 60;
+  const WARM = parseInt(QS.get('warm') || '0', 10);   // 同步预跑 N 步（定步长），确定性验证用
+  const STILL = QS.get('still') === '1';
+  // 无头浏览器不驱动 requestAnimationFrame（截图只走 1-2 帧），?drive=timer 换成定时器，
+  // 这样虚拟时间能推进动画，才能验证"主循环"这条路本身
+  const DRIVE_TIMER = QS.get('drive') === 'timer';
 
   let last = performance.now();
   let time = 0;
   let frames = 0, fpsT = 0, fps = 0;
 
-  function frame(now) {
-    const dt = Math.min(0.033, (now - last) / 1000);
-    last = now;
+  /** 推进一个物理步（dt 秒）。所有 pass 的读写变量都在这里显式给出 */
+  function step(dt) {
     time += dt;
 
     // 1) 速度自对流
@@ -535,29 +723,154 @@
     });
     [dA, dB] = [dB, dA];
 
-    // 7) 显示
+    // 9) 粒子推进（读状态纹理 + 当前速度场）
+    blit(pb, P.particle, (u) => {
+      bindTex(0, pa.tex, u.uState);
+      bindTex(1, vA.tex, u.uVel);
+      bindTex(2, solid.tex, u.uSolid);
+      gl.uniform1f(u.dt, dt * SPEED);
+      gl.uniform1f(u.uLife, PARTICLE_LIFE);
+      gl.uniform1f(u.uSeed, (time * 7.31) % 97.0);
+    });
+    [pa, pb] = [pb, pa];
+  }
+
+  /** 把当前场画到画布 */
+  // 自动对比度：粗网格采样读回 max|p| 和 max|v|（每 0.25 s 一次，121 次 1×1 readPixels 很便宜）
+  let pMax = 0.2, vMax = 0.5, scaleTime = -1;
+  const samplePx = new Float32Array(4);
+  function sampleMaxima() {
+    if (scaleTime >= 0 && time - scaleTime < 0.25) return;
+    scaleTime = time;
+    let pm = 0, vm = 0;
+    const N = 10;
+    for (let iy = 0; iy <= N; iy++) {
+      const y = Math.min(S - 1, Math.floor(iy * S / N));
+      for (let ix = 0; ix <= N; ix++) {
+        const x = Math.min(S - 1, Math.floor(ix * S / N));
+        gl.bindFramebuffer(gl.FRAMEBUFFER, pA.fbo);
+        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, samplePx);
+        pm = Math.max(pm, Math.abs(samplePx[0]));
+        gl.bindFramebuffer(gl.FRAMEBUFFER, vA.fbo);
+        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.FLOAT, samplePx);
+        vm = Math.max(vm, Math.hypot(samplePx[0], samplePx[1]));
+      }
+    }
+    if (pm > 1e-4) pMax = pMax * 0.6 + pm * 0.4;
+    if (vm > 1e-4) vMax = vMax * 0.6 + vm * 0.4;
+  }
+
+  function render() {
+    if (VIEW_MODE === 1 || VIEW_MODE === 2) sampleMaxima();
+    const pScaleQ = parseFloat(QS.get('pscale') || '1');
     blit(null, P.display, (u) => {
       bindTex(0, dA.tex, u.uDye);
       bindTex(1, vA.tex, u.uVel);
       bindTex(2, solid.tex, u.uSolid);
-      gl.uniform1i(u.mode, window.__viewVel ? 1 : 0);
+      bindTex(3, pA.tex, u.uPressure);
+      bindTex(4, maskColor.tex, u.uMask);
+      gl.uniform1i(u.mode, VIEW_MODE);
+      gl.uniform1i(u.uPortrait, PORTRAIT ? 1 : 0);
+      gl.uniform1f(u.uMaxSpeed, Math.max(1e-3, vMax));
+      gl.uniform1f(u.uPScale, pScaleQ / Math.max(1e-4, pMax));
     });
+    if (VIEW_MODE === 3) drawParticles();
+  }
 
-    // ── 数值探针：直接读回纹理，确认场里到底是多少 ──
-    if (QS.get('probe') && (time < 2 || Math.random() < 0.02)) {
-      const px = new Float32Array(4);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, vA.fbo);
-      gl.readPixels(Math.floor(S * 0.5), Math.floor(S * 0.5), 1, 1, gl.RGBA, gl.FLOAT, px);
-      const uMid = px[0], vMid = px[1];
-      gl.bindFramebuffer(gl.FRAMEBUFFER, dA.fbo);
-      gl.readPixels(Math.floor(S * 0.5), Math.floor(S * 0.5), 1, 1, gl.RGBA, gl.FLOAT, px);
-      const dMid = px[0];
-      gl.bindFramebuffer(gl.FRAMEBUFFER, dA.fbo);
-      gl.readPixels(Math.floor(S * 0.1), Math.floor(S * 0.5), 1, 1, gl.RGBA, gl.FLOAT, px);
-      const dIn = px[0];
-      hud.dataset.probe = `u=${uMid.toFixed(3)} v=${vMid.toFixed(3)} dyeMid=${dMid.toFixed(3)} dyeIn=${dIn.toFixed(3)}`;
-      hud.textContent = hud.dataset.probe + ` · ${fps.toFixed(0)}fps`;
+  /** 粒子层：一次 drawArrays 画 PCOUNT 条短线，位置从状态纹理里取 */
+  function drawParticles() {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.useProgram(P.points.p);
+    bindTex(0, pa.tex, P.points.u.uState);
+    bindTex(1, vA.tex, P.points.u.uVel);
+    gl.uniform1i(P.points.u.uPW, PW);
+    gl.uniform1f(P.points.u.uLife, PARTICLE_LIFE);
+    gl.uniform1f(P.points.u.uStreak, STREAK_LEN);
+    gl.drawArrays(gl.LINES, 0, PCOUNT * 2);
+    gl.disable(gl.BLEND);
+  }
+
+  /* ---------------- 数值探针 ---------------- */
+  // 直接 readPixels 读回整行：一行数字比一张截图省得多，也能精确到小数
+  const PROBE_Y = parseFloat(QS.get('py') || '0.5');
+  const PROBE_STEP = Math.max(1, Math.floor(S / 16));
+  function readRow(target, fy) {
+    const y = Math.max(0, Math.min(target.h - 1, Math.floor(fy * target.h)));
+    const buf = new Float32Array(target.w * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    gl.readPixels(0, y, target.w, 1, gl.RGBA, gl.FLOAT, buf);
+    return buf;
+  }
+  function fmtRow(buf) {
+    const out = [];
+    for (let x = 0; x < buf.length / 4; x += PROBE_STEP) out.push(buf[x * 4].toFixed(2));
+    return out.join(' ');
+  }
+  function probeText() {
+    return `t=${time.toFixed(2)} S=${S} py=${PROBE_Y} ` +
+           `| dye[${fmtRow(readRow(dA, PROBE_Y))}] ` +
+           `| u[${fmtRow(readRow(vA, PROBE_Y))}] ` +
+           `| p[${fmtRow(readRow(pA, PROBE_Y))}]`;
+  }
+
+  // ?grid=dye|u|p：整场降采样成 ASCII 灰度图（截图替代品，几行就能看出场死没死）
+  const GRID_RAMP = ' .:-=+*#%@';
+  function gridText(target, ch, scale) {
+    const w = target.w, h = target.h;
+    const buf = new Float32Array(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, buf);
+    const ROWS = 12, COLS = 40, lines = [];
+    for (let r = ROWS - 1; r >= 0; r--) {           // readPixels 自下而上，倒着打
+      let line = '';
+      for (let c = 0; c < COLS; c++) {
+        const x = Math.floor((c + 0.5) * w / COLS);
+        const y = Math.floor((r + 0.5) * h / ROWS);
+        const norm = Math.max(0, Math.min(1, Math.abs(buf[(y * w + x) * 4 + ch]) / scale));
+        line += GRID_RAMP[Math.floor(norm * 9.999)];
+      }
+      lines.push(line);
     }
+    return lines.join('\n');
+  }
+  function probe() {
+    const t = probeText();
+    hud.dataset.probe = t;
+    hud.textContent = t;
+    const which = QS.get('grid');
+    if (which) {
+      const parts = [];
+      if (which === 'p') parts.push('--- pressure ---\n' + gridText(pA, 0, 0.1));
+      else if (which === 'u') parts.push('--- u ---\n' + gridText(vA, 0, 0.5));
+      else parts.push('--- dye ---\n' + gridText(dA, 0, 1.0));
+      const box = document.getElementById('dbg');
+      if (box) box.textContent = parts.join('\n');
+    }
+  }
+
+  /* ---------------- 启动 ---------------- */
+  // ?warm=N：先同步跑 N 个定步长帧，再出画面。让无头浏览器也能拿到稳态数值。
+  // 顺序很重要：resize 之后再 warm/render，否则第一帧按 300×150 的默认画布尺寸算。
+  function boot() {
+    resize();
+    maskReady.then(() => {
+      initParticles();
+      if (WARM > 0) for (let i = 0; i < WARM; i++) step(FIXED_DT);
+      render();
+      if (QS.get('probe')) probe();
+      if (!STILL) schedule();
+    });
+  }
+
+  function frame(now) {
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+
+    step(dt);
+    render();
+
+    if (QS.get('probe') && (time < 2 || Math.random() < 0.02)) probe();
 
     frames++; fpsT += dt;
     if (fpsT > 0.5) {
@@ -566,7 +879,12 @@
         `GPU ${S}×${S} · ${fps.toFixed(0)} fps · 压力 ${PRESSURE_ITERS} 次` +
         (hasMask ? ' · 有掩码' : '');
     }
-    requestAnimationFrame(frame);
+    schedule();
+  }
+
+  function schedule() {
+    if (DRIVE_TIMER) setTimeout(() => frame(performance.now()), 16);
+    else requestAnimationFrame(frame);
   }
 
   /* ---------------- UI ---------------- */
@@ -574,12 +892,15 @@
 
   $('btnPanel').onclick = () => document.body.classList.toggle('collapsed');
 
+  // 窄屏默认收起侧栏（抽屉），否则手机上 220px 的侧栏会吃掉一半画布
+  if (window.innerWidth <= 820) document.body.classList.add('collapsed');
+
   $('btnPick').onclick = () => $('file').click();
   $('file').onchange = (e) => {
     const f = e.target.files[0];
     if (!f) return;
     const url = URL.createObjectURL(f);
-    loadMaskFromUrl(url);
+    loadMaskWithFallback([url]);
     e.target.value = '';
   };
 
@@ -587,7 +908,7 @@
     const n = e.target.value;
     if (!n) return;
     objX = 0.3; objY = 0.5; objScale = 0.7;
-    loadMaskFromUrl('presets/' + n + '.png');
+    loadMaskWithFallback(['../presets/' + n + '.png', 'presets/' + n + '.png']);
   };
 
   $('wall').onchange = () => uploadMask();
@@ -606,7 +927,7 @@
   $('view').onclick = (e) => {
     const b = e.target.closest('button'); if (!b) return;
     [...$('view').children].forEach(x => x.classList.toggle('on', x === b));
-    window.__viewVel = b.dataset.v === 'vel';
+    VIEW_MODE = VIEW_IDS[b.dataset.v] === undefined ? 0 : VIEW_IDS[b.dataset.v];
   };
 
   // 拖动移动障碍物
@@ -619,8 +940,13 @@
   cv.addEventListener('pointermove', (e) => {
     if (!drag) return;
     const r = cv.getBoundingClientRect();
-    objX = Math.max(0.05, Math.min(0.95, drag.ox + (e.clientX - drag.x) / r.width));
-    objY = Math.max(0.05, Math.min(0.95, drag.oy + (e.clientY - drag.y) / r.height));
+    const dx = (e.clientX - drag.x) / r.width;
+    const dy = (e.clientY - drag.y) / r.height;
+    // 竖屏：屏幕横向对应网格 y（反向），纵向对应网格 x（反向）
+    const dgx = PORTRAIT ? -dy : dx;
+    const dgy = PORTRAIT ? -dx : dy;
+    objX = Math.max(0.05, Math.min(0.95, drag.ox + dgx));
+    objY = Math.max(0.05, Math.min(0.95, drag.oy + dgy));
     uploadMask();
   });
   cv.addEventListener('pointerup', () => { drag = null; });
@@ -630,10 +956,14 @@
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     cv.width = Math.floor(cv.clientWidth * dpr);
     cv.height = Math.floor(cv.clientHeight * dpr);
+    // 窗口转了方向：重算竖屏判定，并把物体按新朝向重新光栅化
+    if (!ORIENT_Q) {
+      const p = window.innerWidth < window.innerHeight;
+      if (p !== PORTRAIT) { PORTRAIT = p; uploadMask(); }
+    }
   }
   window.addEventListener('resize', resize);
-  resize();
-  requestAnimationFrame(frame);
+  boot();
 })();
 </script>
 </body>

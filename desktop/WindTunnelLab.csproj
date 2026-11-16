@@ -9,8 +9,8 @@
     <AssemblyName>WindTunnelLab</AssemblyName>
     <RootNamespace>WindTunnelLab</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.3.8</Version>
-    <FileVersion>0.3.8.0</FileVersion>
+    <Version>0.3.9</Version>
+    <FileVersion>0.3.9.0</FileVersion>
 
     <!-- 单文件 + 自带运行时：下载一个 exe 直接双击就能用，不用先装 .NET -->
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -29,6 +29,8 @@
   <!-- 网页文件直接嵌进 exe，运行时解压到 %LOCALAPPDATA%\WindTunnelLab\web -->
   <ItemGroup>
     <EmbeddedResource Include="..\index.html" LogicalName="web.index.html" />
+    <EmbeddedResource Include="..\cpu.html" LogicalName="web.cpu.html" />
+    <EmbeddedResource Include="..\gpu\gpu-fluid.html" LogicalName="web.gpu.gpu-fluid.html" />
     <EmbeddedResource Include="..\test-tank.png" LogicalName="web.test-tank.png" />
     <EmbeddedResource Include="..\v1-lbm.html" LogicalName="web.v1-lbm.html" />
     <EmbeddedResource Include="..\presets\*.png" LogicalName="web.presets.%(Filename)%(Extension)" />

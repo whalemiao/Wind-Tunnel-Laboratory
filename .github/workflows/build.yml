@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'index.html'
+      - 'cpu.html'
+      - 'gpu/**'
       - 'android/**'
       - 'desktop/**'
       - 'CHANGELOG.md'
@@ -21,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: v0.3.8
+  RELEASE_TAG: v0.3.9
 
 jobs:
   apk:
@@ -30,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Stamp build date
-        run: sed -i "s/__BUILD_DATE__/$(TZ=Asia/Shanghai date +%F)/" index.html
+        run: sed -i "s/__BUILD_DATE__/$(TZ=Asia/Shanghai date +%F)/" index.html cpu.html
 
       - uses: actions/setup-java@v4
         with:
@@ -162,7 +164,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Stamp build date
-        run: sed -i "s/__BUILD_DATE__/$(TZ=Asia/Shanghai date +%F)/" index.html
+        run: sed -i "s/__BUILD_DATE__/$(TZ=Asia/Shanghai date +%F)/" index.html cpu.html
 
       - name: Download APK
         uses: actions/download-artifact@v4
@@ -179,7 +181,8 @@ jobs:
       - name: Copy web files
         run: |
           mkdir -p site
-          cp index.html v1-lbm.html test-tank.png site/
+          cp index.html cpu.html v1-lbm.html test-tank.png site/
+          cp -r gpu site/
           cp CHANGELOG.md README.md site/ 2>/dev/null || true
           cp -r shots site/ 2>/dev/null || true
           cp -r presets site/ 2>/dev/null || true
