@@ -348,6 +348,11 @@
   }
 
   /* ---------------- 主循环 ---------------- */
+  // 显式 ping-pong：每一步明确"读哪个、写哪个"，避免翻转计数出 bug
+  let vA = vel[0], vB = vel[1];
+  let pA = pressure[0], pB = pressure[1];
+  let dA = dye[0], dB = dye[1];
+
   let last = performance.now();
   let time = 0;
   let frames = 0, fpsT = 0, fps = 0;
@@ -357,84 +362,76 @@
     last = now;
     time += dt;
 
-    // 1) 速度对流
-    const vSrc = vel[velIdx], vDst = vel[1 - velIdx];
-    blit(vDst, P.advectVel, (u) => {
-      bindTex(0, vSrc.tex, u.uVel);
+    // 1) 速度自对流
+    blit(vB, P.advectVel, (u) => {
+      bindTex(0, vA.tex, u.uVel);
       gl.uniform1f(u.dt, dt * SPEED);
       gl.uniform1f(u.dissipation, VEL_DISS);
     });
-    velIdx = 1 - velIdx;
+    [vA, vB] = [vB, vA];
 
     // 2) 涡量约束
-    const vCur = vel[velIdx], vNext = vel[1 - velIdx];
-    blit(vNext, P.vorticity, (u) => {
-      bindTex(0, vCur.tex, u.uVel);
+    blit(vB, P.vorticity, (u) => {
+      bindTex(0, vA.tex, u.uVel);
       bindTex(1, solid.tex, u.uSolid);
       gl.uniform1f(u.curlAmount, 28.0);
       gl.uniform1f(u.dt, dt);
     });
-    velIdx = 1 - velIdx;
+    [vA, vB] = [vB, vA];
 
-    // 2.5) 入口速度边界
-    blit(vel[1 - velIdx], P.inletVel, (u) => {
-      bindTex(0, vel[velIdx].tex, u.uVel);
+    // 3) 入口速度边界
+    blit(vB, P.inletVel, (u) => {
+      bindTex(0, vA.tex, u.uVel);
       gl.uniform1f(u.inflow, 0.35);
     });
-    velIdx = 1 - velIdx;
+    [vA, vB] = [vB, vA];
 
-    // 3) 散度
+    // 4) 散度
     blit(divergence, P.divergence, (u) => {
-      bindTex(0, vel[velIdx].tex, u.uVel);
+      bindTex(0, vA.tex, u.uVel);
       bindTex(1, solid.tex, u.uSolid);
     });
 
-    // 4) 压力迭代
-    let pSrc = 0;
-    blit(pressure[1 - pSrc], P.pressure, (u) => {
-      bindTex(0, pressure[pSrc].tex, u.uPressure);
-      bindTex(1, divergence.tex, u.uDiv);
-      bindTex(2, solid.tex, u.uSolid);
-    });
-    pSrc = 1 - pSrc;
-    for (let i = 1; i < PRESSURE_ITERS; i++) {
-      blit(pressure[1 - pSrc], P.pressure, (u) => {
-        bindTex(0, pressure[pSrc].tex, u.uPressure);
+    // 5) 压力：Jacobi 迭代（pA/pB 交替）
+    for (let i = 0; i < PRESSURE_ITERS; i++) {
+      blit(pB, P.pressure, (u) => {
+        bindTex(0, pA.tex, u.uPressure);
         bindTex(1, divergence.tex, u.uDiv);
         bindTex(2, solid.tex, u.uSolid);
       });
-      pSrc = 1 - pSrc;
+      [pA, pB] = [pB, pA];
     }
 
-    // 5) 减梯度
-    blit(vel[1 - velIdx], P.gradient, (u) => {
-      bindTex(0, pressure[pSrc].tex, u.uPressure);
-      bindTex(1, vel[velIdx].tex, u.uVel);
+    // 6) 减压力梯度（投影）
+    blit(vB, P.gradient, (u) => {
+      bindTex(0, pA.tex, u.uPressure);
+      bindTex(1, vA.tex, u.uVel);
       bindTex(2, solid.tex, u.uSolid);
     });
-    velIdx = 1 - velIdx;
+    [vA, vB] = [vB, vA];
 
-    // 6) 染料对流 + 入口注入
-    const dSrc = dye[dyeIdx], dDst = dye[1 - dyeIdx];
-    blit(dDst, P.advectDye, (u) => {
-      bindTex(0, vel[velIdx].tex, u.uVel);
-      bindTex(1, dSrc.tex, u.uDye);
+    // 7) 染料对流（显式绑定当前速度 vA）
+    blit(dB, P.advectDye, (u) => {
+      bindTex(0, vA.tex, u.uVel);
+      bindTex(1, dA.tex, u.uDye);
       bindTex(2, solid.tex, u.uSolid);
       gl.uniform1f(u.dt, dt * SPEED);
       gl.uniform1f(u.dissipation, DYE_DISS);
     });
-    dyeIdx = 1 - dyeIdx;
-    blit(dye[1 - dyeIdx], P.inlet, (u) => {
-      bindTex(0, dye[dyeIdx].tex, u.uDye);
+    [dA, dB] = [dB, dA];
+
+    // 8) 入口注入
+    blit(dB, P.inlet, (u) => {
+      bindTex(0, dA.tex, u.uDye);
       gl.uniform1f(u.time, time);
       gl.uniform1f(u.uWide, QS.get('wide') === '1' ? 1.0 : 0.0);
     });
-    dyeIdx = 1 - dyeIdx;
+    [dA, dB] = [dB, dA];
 
     // 7) 显示
     blit(null, P.display, (u) => {
-      bindTex(0, dye[dyeIdx].tex, u.uDye);
-      bindTex(1, vel[velIdx].tex, u.uVel);
+      bindTex(0, dA.tex, u.uDye);
+      bindTex(1, vA.tex, u.uVel);
       bindTex(2, solid.tex, u.uSolid);
       gl.uniform1i(u.mode, VIEW_VEL ? 1 : 0);
     });
@@ -442,13 +439,13 @@
     // ── 数值探针：直接读回纹理，确认场里到底是多少 ──
     if (QS.get('probe') && (time < 2 || Math.random() < 0.02)) {
       const px = new Float32Array(4);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, vel[velIdx].fbo);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, vA.fbo);
       gl.readPixels(Math.floor(S * 0.5), Math.floor(S * 0.5), 1, 1, gl.RGBA, gl.FLOAT, px);
       const uMid = px[0], vMid = px[1];
-      gl.bindFramebuffer(gl.FRAMEBUFFER, dye[dyeIdx].fbo);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dA.fbo);
       gl.readPixels(Math.floor(S * 0.5), Math.floor(S * 0.5), 1, 1, gl.RGBA, gl.FLOAT, px);
       const dMid = px[0];
-      gl.bindFramebuffer(gl.FRAMEBUFFER, dye[dyeIdx].fbo);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dA.fbo);
       gl.readPixels(Math.floor(S * 0.1), Math.floor(S * 0.5), 1, 1, gl.RGBA, gl.FLOAT, px);
       const dIn = px[0];
       hud.dataset.probe = `u=${uMid.toFixed(3)} v=${vMid.toFixed(3)} dyeMid=${dMid.toFixed(3)} dyeIn=${dIn.toFixed(3)}`;
