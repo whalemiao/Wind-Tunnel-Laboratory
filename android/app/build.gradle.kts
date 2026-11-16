@@ -14,7 +14,8 @@ android {
         versionName = "0.2.2"
     }
 
-    // debug 版用自动生成的调试密钥签名，能直接装（不需要自己配 keystore�?    buildTypes {
+    // debug 版用自动生成的调试密钥签名，能直接装（不需要自己配 keystore）
+    buildTypes {
         getByName("debug") {
             isMinifyEnabled = false
         }
@@ -26,7 +27,9 @@ android {
     }
 }
 
-// 关键：每次构建前把仓库根目录�?index.html 拷进 assets�?// 这样网页只需要维护一份，APK 里永远是同一份代�?val syncWeb = tasks.register<Copy>("syncWebAssets") {
+// 关键：每次构建前把仓库根目录的 index.html 拷进 assets，
+// 这样网页只维护一份，APK 里的永远是最新版
+val syncWeb = tasks.register<Copy>("syncWebAssets") {
     from(rootProject.projectDir.parentFile) {
         include("index.html")
         include("test-tank.png")
