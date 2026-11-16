@@ -225,7 +225,8 @@
   const fail = (msg) => { errBox.style.display = 'block'; errBox.textContent = msg; throw new Error(msg); };
 
   const QS = new URLSearchParams(location.search);
-  const SIM = parseInt(QS.get('sim') || '512', 10);      // 模拟分辨率（正方形网格）
+  const SIM = parseInt(QS.get('sim') || '0', 10) ||      // 模拟分辨率（正方形网格）
+    (window.innerWidth <= 820 ? 256 : 512);   // 窄屏=手机，默认降一档
   let PRESSURE_ITERS = parseInt(QS.get('iters') || '24', 10);
   const VEL_DISS = parseFloat(QS.get('vdis') || '0.994');
   const DYE_DISS = parseFloat(QS.get('ddis') || '0.9995');
@@ -391,6 +392,11 @@
     fragColor = vec4(vec3(band), 1.0);
   }`;
 
+  // 缩小拷贝：把速度场降到 160² 再读回（读 100KB 而不是 4MB，流线只需要大趋势）
+  const FS_COPY = HEAD + `
+  uniform sampler2D uSrc;
+  void main(){ fragColor = vec4(texture(uSrc, vUv).xy, 0.0, 1.0); }`;
+
   // 入口条纹（左侧注入）
   const FS_INLET = HEAD + `
   uniform sampler2D uDye;
@@ -539,6 +545,7 @@
   uniform sampler2D uState;
   uniform sampler2D uVel;
   uniform int uPW;
+  uniform int uPortrait;
   uniform float uLife;
   uniform float uStreak;
   out float vAlpha;
@@ -551,7 +558,9 @@
     vec2 p = s.xy - v * uStreak * float(head);
     float life = 1.0 - clamp(s.z / uLife, 0.0, 1.0);
     vAlpha = life * (1.0 - 0.85 * float(head));
-    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+    // 必须和显示 pass 用同一套竖屏旋转，否则竖屏里脉线会比烟/流线拧 90°
+    vec2 uv = uPortrait == 1 ? vec2(1.0 - p.y, p.x) : p;
+    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
   }`;
 
   const FS_STREAKS = `#version 300 es
@@ -616,12 +625,13 @@
   /* ---------------- 状态 ---------------- */
   // S 是可变的：改分辨率时重建全部渲染目标（图片留在内存里，不用重新选）
   let S = SIM;
-  let vel, pressure, divergence, dye, solid, maskColor;
+  let vel, pressure, divergence, dye, solid, maskColor, velSmall;
+  const VW = 160;                    // 速度小图分辨率（流线积分的输入）
   // 显式 ping-pong 变量：每一步明确读哪个写哪个
   let vA, vB, pA, pB, dA, dB, pa, pb;
 
   function allocTargets() {
-    const old = [divergence, solid, maskColor];
+    const old = [divergence, solid, maskColor, velSmall];
     if (vel) old.push(vel[0], vel[1], pressure[0], pressure[1], dye[0], dye[1]);
     old.forEach(t => { if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); } });
 
@@ -635,7 +645,9 @@
     solid = makeTarget(S, S, gl.R8, gl.RED, gl.UNSIGNED_BYTE);
     // 掩码的彩色版本：只用于显示（把原图贴回固体格），不参与物理
     maskColor = makeTarget(S, S, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
-    [vel[0], vel[1], pressure[0], pressure[1], dye[0], dye[1], solid, maskColor].forEach(clearTarget);
+    // 速度小图：流线积分只读它（160² = 100KB，比读 512² 的 4MB 便宜 40 倍）
+    velSmall = makeTarget(VW, VW, gl.RG16F, gl.RG, gl.HALF_FLOAT);
+    [vel[0], vel[1], pressure[0], pressure[1], dye[0], dye[1], solid, maskColor, velSmall].forEach(clearTarget);
 
     vA = vel[0]; vB = vel[1];
     pA = pressure[0]; pB = pressure[1];
@@ -662,6 +674,7 @@
     inletVel: program(FS_INLET_VEL),
     fillVel: program(FS_FILL_VEL),
     seedDye: program(FS_SEED_DYE),
+    copySrc: program(FS_COPY),
     advectDye: program(FS_ADVECT_DYE),
     inlet: program(FS_INLET),
     display: program(FS_DISPLAY),
@@ -1111,16 +1124,19 @@
     return samplePx[0];
   }
   function sampleMaxima() {
+    // 只有需要色标的层才采样（关掉场显示时一次 readPixels 都不做）
+    if (FIELD_MODE === 0) return;
     const needCurl = FIELD_MODE === 3;
-    if (scaleTime >= 0 && time - scaleTime < 0.25) return;
+    const needP = FIELD_MODE === 1;
+    if (scaleTime >= 0 && time - scaleTime < 0.5) return;
     scaleTime = time;
     let pm = 0, vm = 0, cm = 0;
-    const N = 10;
+    const N = 4;                                   // 5×5 = 25 个点，够用且便宜（原来是 121 点）
     for (let iy = 0; iy <= N; iy++) {
       const y = Math.min(S - 1, Math.floor(iy * S / N));
       for (let ix = 0; ix <= N; ix++) {
         const x = Math.min(S - 1, Math.floor(ix * S / N));
-        pm = Math.max(pm, Math.abs(read1(pA.fbo, x, y)));
+        if (needP) pm = Math.max(pm, Math.abs(read1(pA.fbo, x, y)));
         read2(vA.fbo, x, y, _n1);
         vm = Math.max(vm, Math.hypot(_n1[0], _n1[1]));
         if (needCurl && x > 0 && x < S - 1 && y > 0 && y < S - 1) {
@@ -1151,7 +1167,6 @@
   let smokeRGB = hslToRgb(190, 0.85, 0.72);
   function render() {
     sampleMaxima();
-    if (FIELD_MODE !== 0 || PART_MODE !== 'none') { /* 需要自动对比度 */ }
     const pScaleQ = parseFloat(QS.get('pscale') || '1');
     blit(null, P.display, (u) => {
       bindTex(0, dA.tex, u.uDye);
@@ -1184,6 +1199,7 @@
     bindTex(0, pa.tex, P.points.u.uState);
     bindTex(1, vA.tex, P.points.u.uVel);
     gl.uniform1i(P.points.u.uPW, PW);
+    gl.uniform1i(P.points.u.uPortrait, PORTRAIT ? 1 : 0);
     gl.uniform1f(P.points.u.uLife, PARTICLE_LIFE);
     // 随机 = 短点，脉线 = 长线
     gl.uniform1f(P.points.u.uStreak, PART_MODE === 'random' ? 0.018 : STREAK_LEN);
@@ -1196,7 +1212,8 @@
   // 而读回一张 S×S 的速度场只要几毫秒，JS 里积分一次能画几十条 —— 和 CPU 版同一套算法。
   const ov = document.getElementById('overlay');
   const ovx = ov.getContext('2d');
-  let velRaw = null, usF = null, vsF = null, velT = -1;
+  let velRaw = null, usF = null, vsF = null, velT = -1, tmpA = null, tmpB = null;
+  let overlayDirty = true;         // 只有尺寸/位置变了才重新量 getBoundingClientRect（每帧量会触发布局）
   let solidBits = null;            // uploadMask 里留下的固体掩码副本
   let streamCv = null, streamT = -1;   // 流线缓存层（8Hz 重建，每帧只贴图）
 
@@ -1206,7 +1223,7 @@
 
   function syncOverlay() {
     const r = cv.getBoundingClientRect();
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.min(1.5, window.devicePixelRatio || 1);
     const w = Math.max(1, Math.round(r.width * dpr));
     const h = Math.max(1, Math.round(r.height * dpr));
     if (ov.width !== w || ov.height !== h) { ov.width = w; ov.height = h; }
@@ -1216,44 +1233,68 @@
     ov.style.height = r.height + 'px';
   }
 
-  /** 读回速度场并做空间平滑 + 时间低通（否则流线会像闪电一样抽） */
+  /**
+   * 更新流线用的速度场。
+   * 性能要点（之前就卡在这）：
+   *   1. 不再读 S² 的整张纹理（512² = 4MB，读一次就掉帧），先 blit 到 160² 的 velSmall 再读（100KB）
+   *   2. 平滑改成可分离的两趟一维盒滤波（O(n) 而不是 O(25n)）
+   */
   function updateVelField() {
-    const n = S * S;
-    if (!velRaw || velRaw.length !== n * 4) {
+    blit(velSmall, P.copySrc, (u) => bindTex(0, vA.tex, u.uSrc));
+    const n = VW * VW;
+    if (!velRaw || velRaw.length !== n * 4 || !usF || !tmpA) {
       velRaw = new Float32Array(n * 4);
       usF = new Float32Array(n); vsF = new Float32Array(n);
+      tmpA = new Float32Array(n * 2); tmpB = new Float32Array(n * 2);   // 交错存 xy，所以是 2n
     }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, vA.fbo);
-    gl.readPixels(0, 0, S, S, gl.RGBA, gl.FLOAT, velRaw);
-    const R = Math.max(1, Math.round(S / 128));
-    for (let y = 1; y < S - 1; y++) {
-      for (let x = 1; x < S - 1; x++) {
-        const i = y * S + x;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, velSmall.fbo);
+    gl.readPixels(0, 0, VW, VW, gl.RGBA, gl.FLOAT, velRaw);
+
+    // 两趟可分离的一维盒滤波（半径 2）：横向 → 纵向
+    const R = 2;
+    for (let y = 0; y < VW; y++) {
+      for (let x = 0; x < VW; x++) {
         let su = 0, sv = 0, c = 0;
-        for (let dy = -R; dy <= R; dy++) {
-          const yy = y + dy;
-          if (yy < 0 || yy >= S) continue;
-          for (let dx = -R; dx <= R; dx++) {
-            const xx = x + dx;
-            if (xx < 0 || xx >= S) continue;
-            const j = (yy * S + xx) * 4;
-            su += velRaw[j]; sv += velRaw[j + 1]; c++;
-          }
+        for (let k = -R; k <= R; k++) {
+          const xx = Math.min(VW - 1, Math.max(0, x + k));
+          const j = (y * VW + xx) * 4;
+          su += velRaw[j]; sv += velRaw[j + 1]; c++;
         }
-        const nu = su / c, nv = sv / c;
-        usF[i] = usF[i] * 0.85 + nu * 0.15;
-        vsF[i] = vsF[i] * 0.85 + nv * 0.15;
+        const o = (y * VW + x) * 2;
+        tmpA[o] = su / c; tmpA[o + 1] = sv / c;
       }
+    }
+    for (let y = 0; y < VW; y++) {
+      for (let x = 0; x < VW; x++) {
+        let su = 0, sv = 0, c = 0;
+        for (let k = -R; k <= R; k++) {
+          const yy = Math.min(VW - 1, Math.max(0, y + k));
+          const j = (yy * VW + x) * 2;
+          su += tmpA[j]; sv += tmpA[j + 1]; c++;
+        }
+        const o = (y * VW + x) * 2;
+        tmpB[o] = su / c; tmpB[o + 1] = sv / c;
+      }
+    }
+    // 时间低通（0.85 旧 + 0.15 新）：不然流线会像闪电一样抽
+    for (let i = 0; i < n; i++) {
+      usF[i] = usF[i] * 0.85 + tmpB[i * 2] * 0.15;
+      vsF[i] = vsF[i] * 0.85 + tmpB[i * 2 + 1] * 0.15;
     }
   }
 
   const _s1 = [0, 0], _s2 = [0, 0];
+  /** 在 UV 空间采样平滑后的速度（x,y ∈ 0..1） */
   function sampleF(x, y, out) {
     if (x < 0) x = 0; if (y < 0) y = 0;
-    if (x > S - 1.001) x = S - 1.001;
-    if (y > S - 1.001) y = S - 1.001;
-    const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0;
-    const i00 = y0 * S + x0, i10 = i00 + 1, i01 = i00 + S, i11 = i01 + 1;
+    if (x > 0.999999) x = 0.999999;
+    if (y > 0.999999) y = 0.999999;
+    const gx = x * VW - 0.5, gy = y * VW - 0.5;
+    const x0 = Math.max(0, Math.min(VW - 1, Math.floor(gx)));
+    const y0 = Math.max(0, Math.min(VW - 1, Math.floor(gy)));
+    const x1 = Math.min(VW - 1, x0 + 1), y1 = Math.min(VW - 1, y0 + 1);
+    const fx = Math.max(0, Math.min(1, gx - x0)), fy = Math.max(0, Math.min(1, gy - y0));
+    const i00 = y0 * VW + x0, i10 = y0 * VW + x1, i01 = y1 * VW + x0, i11 = y1 * VW + x1;
     out[0] = (usF[i00] * (1 - fx) + usF[i10] * fx) * (1 - fy) +
              (usF[i01] * (1 - fx) + usF[i11] * fx) * fy;
     out[1] = (vsF[i00] * (1 - fx) + vsF[i10] * fx) * (1 - fy) +
@@ -1261,18 +1302,21 @@
   }
 
   function drawStreamlines() {
-    syncOverlay();
-    if (!usF || time - velT > 0.2) { updateVelField(); velT = time; }
-    // 积分一次能画出上万段线，逐帧重算太贵 → 缓存到离屏层，每帧只贴图
+    if (overlayDirty) { syncOverlay(); overlayDirty = false; }
+    if (!usF || time - velT > 0.4) { updateVelField(); velT = time; }
     if (!streamCv || streamCv.width !== ov.width || streamCv.height !== ov.height) {
       streamCv = document.createElement('canvas');
       streamCv.width = ov.width; streamCv.height = ov.height;
       streamT = -1;
     }
-    if (time - streamT > 0.12) { rebuildStreamlines(); streamT = time; }
-    ovx.setTransform(1, 0, 0, 1, 0, 0);
-    ovx.clearRect(0, 0, ov.width, ov.height);
-    ovx.drawImage(streamCv, 0, 0);
+    // 只在重建时才动覆盖层：每帧 clear+drawImage 一张 2K 画布也是白花的钱
+    if (time - streamT > 0.15) {
+      rebuildStreamlines();
+      ovx.setTransform(1, 0, 0, 1, 0, 0);
+      ovx.clearRect(0, 0, ov.width, ov.height);
+      ovx.drawImage(streamCv, 0, 0);
+      streamT = time;
+    }
   }
 
   function rebuildStreamlines() {
@@ -1285,27 +1329,34 @@
     g.lineJoin = 'round';
     g.lineCap = 'round';
 
-    // 网格坐标 → 覆盖层像素（竖屏整体转 90°，和显示 pass 的 fuv 映射一致）
+    // UV → 覆盖层像素（竖屏整体转 90°，和显示 pass 的 fuv 映射一致）
     const toPx = PORTRAIT
       ? (fx, fy) => [(1 - fy) * W, (1 - fx) * H]
       : (fx, fy) => [fx * W, fy * H];
 
-    const Hh = 0.55;                                  // 步长（格）
-    const MAXSTEP = Math.ceil(S * 1.8 / Hh);
+    const Hh = 0.55 / S;                              // 步长（UV）
+    const MAXSTEP = Math.ceil(S * 1.8 / 0.55);
     const seedsRows = 30;
     const seeds = [];
-    for (let s = 0; s < seedsRows; s++) seeds.push([3, 2.5 + s * (S - 5) / (seedsRows - 1)]);
-    const stepX = Math.max(18, Math.round(S / 10));
-    const stepY = Math.max(12, Math.round(S / 9));
-    for (let y = stepY; y < S - 3; y += stepY) {
-      for (let x = stepX; x < S - 3; x += stepX) seeds.push([x, y]);
+    for (let s = 0; s < seedsRows; s++) seeds.push([3 / S, (2.5 + s * (S - 5) / (seedsRows - 1)) / S]);
+    const stepX = Math.max(18, Math.round(S / 10)) / S;
+    const stepY = Math.max(12, Math.round(S / 9)) / S;
+    for (let y = stepY; y < (S - 3) / S; y += stepY) {
+      for (let x = stepX; x < (S - 3) / S; x += stepX) seeds.push([x, y]);
     }
+
+    const solidAt = (x, y) => {
+      if (!solidBits) return false;
+      const gx = Math.min(S - 1, Math.max(0, x * S | 0));
+      const gy = Math.min(S - 1, Math.max(0, y * S | 0));
+      return solidBits[gy * S + gx] !== 0;
+    };
 
     const speedRef = Math.max(1e-4, INFLOW * 1.2);
     for (let si = 0; si < seeds.length; si++) {
       let x = seeds[si][0], y = seeds[si][1];
-      if (solidBits && solidBits[(y | 0) * S + (x | 0)]) continue;
-      const p0 = toPx(x / S, y / S);
+      if (solidAt(x, y)) continue;
+      const p0 = toPx(x, y);
       g.beginPath();
       g.moveTo(p0[0], p0[1]);
       let lastDx = 1, lastDy = 0, drawn = 0, sp2 = 0;
@@ -1330,9 +1381,9 @@
         }
         lastDx = dx; lastDy = dy;
         x += dx; y += dy;
-        if (x < 1 || x > S - 1 || y < 1 || y > S - 2) break;
-        if (solidBits && solidBits[(y | 0) * S + (x | 0)]) break;   // 撞到物体就停
-        const p = toPx(x / S, y / S);
+        if (x < 0 || x > 1 || y < 0 || y > 1) break;
+        if (solidAt(x, y)) break;                     // 撞到物体就停
+        const p = toPx(x, y);
         g.lineTo(p[0], p[1]);
         drawn++;
       }
@@ -1469,6 +1520,7 @@
     const dt = Math.min(0.033, (now - last) / 1000);
     last = now;
 
+    flushStamps();
     step(dt);
     render();
     updateForces();
@@ -1493,7 +1545,11 @@
   /* ---------------- UI ---------------- */
   const $ = (id) => document.getElementById(id);
 
-  $('btnPanel').onclick = () => document.body.classList.toggle('collapsed');
+  $('btnPanel').onclick = () => {
+    document.body.classList.toggle('collapsed');
+    overlayDirty = true;                       // 画布左边距变了，覆盖层要重新对齐
+    setTimeout(() => { overlayDirty = true; }, 260);   // 等 CSS 过渡跑完
+  };
 
   // 窄屏默认收起侧栏（抽屉），否则手机上 220px 的侧栏会吃掉一半画布
   if (window.innerWidth <= 820) document.body.classList.add('collapsed');
@@ -1538,7 +1594,7 @@
     uploadMask();
     seedDye();
     initParticles();
-    velT = -1; usF = null; streamT = -1;      // 流线缓存作废
+    velT = -1; velRaw = null; usF = null; streamT = -1;      // 流线缓存作废
     $('vSim').textContent = S;
     let best = +$('res').options[0].value;
     for (const o of [...$('res').options]) {
@@ -1566,8 +1622,8 @@
   };
   $('brush').oninput = (e) => { brush = +e.target.value; $('vBrush').textContent = brush; };
 
-  /** 在网格坐标 (gx,gy) 处涂/擦一个圆 */
-  function stamp(gx, gy) {
+  /** 把笔迹写进 paint 层（不重建掩码） */
+  function stampInto(gx, gy) {
     if (!paint) paint = new Uint8Array(S * S);
     const v = tool === 'brush' ? 1 : 0;
     const r = brush;
@@ -1576,6 +1632,15 @@
         if ((x - gx) * (x - gx) + (y - gy) * (y - gy) <= r * r) paint[y * S + x] = v;
       }
     }
+  }
+
+  // 指针事件比帧还密（120Hz），每次重建整张掩码会直接卡死 → 一帧只重建一次
+  let pendingStamps = [];
+  function stamp(gx, gy) { pendingStamps.push([gx, gy]); }
+  function flushStamps() {
+    if (!pendingStamps.length) return;
+    for (const [gx, gy] of pendingStamps) stampInto(gx, gy);
+    pendingStamps = [];
     uploadMask();
   }
 
@@ -1755,7 +1820,7 @@
   }, { passive: false });
 
   function resize() {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.min(1.5, window.devicePixelRatio || 1);   // 满屏填充是瓶颈，1.5 比 2.0 省 44%
     cv.width = Math.floor(cv.clientWidth * dpr);
     cv.height = Math.floor(cv.clientHeight * dpr);
     // 窗口转了方向：重算竖屏判定
@@ -1763,6 +1828,7 @@
       const p = window.innerWidth < window.innerHeight;
       if (p !== PORTRAIT) { PORTRAIT = p; uploadMask(); }
     }
+    overlayDirty = true;
     clearOverlay();
   }
   window.addEventListener('resize', resize);
@@ -1791,9 +1857,9 @@
     const ok = (name, cond, extra) => out.push((cond ? 'PASS ' : 'FAIL ') + name + (extra ? '  ' + extra : ''));
     try {
       const bx = Math.round(S * 0.2), by = Math.round(S * 0.8);
-      tool = 'brush'; stamp(bx, by);
+      tool = 'brush'; stamp(bx, by); flushStamps();
       ok('画笔能落墙', solidBits && solidBits[by * S + bx] === 255);
-      tool = 'eraser'; stamp(bx, by);
+      tool = 'eraser'; stamp(bx, by); flushStamps();
       ok('橡皮能擦掉', solidBits && solidBits[by * S + bx] === 0);
       tool = 'none';
 
@@ -1813,7 +1879,7 @@
       PART_MODE = 'streak'; initParticles(); step(FIXED_DT);
       ok('粒子纹理可用', !!pa && PCOUNT > 0, 'PCOUNT=' + PCOUNT);
       PART_MODE = 'stream'; updateVelField();
-      ok('速度场读回（流线用）', !!usF && isFinite(usF[S * S / 2 | 0]));
+      ok('速度场读回（流线用）', !!usF && isFinite(usF[VW * VW / 2 | 0]), 'len=' + (usF ? usF.length : 0) + ' mid=' + (usF ? usF[VW * VW / 2 | 0] : 'null') + ' raw=' + (velRaw ? [velRaw[0],velRaw[1],velRaw[2],velRaw[3]].join(',') : 'null'));
 
       for (let i = 0; i < 120; i++) step(FIXED_DT);
       updateForces();
