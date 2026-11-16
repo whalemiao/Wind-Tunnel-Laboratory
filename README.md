@@ -59,9 +59,9 @@ GPU 版在跑不动或不被支持时会**自动退回** CPU 版；想手动对�
 | --- | --- |
 | ![速度](shots/gpu-view-vel.png) | ![压力](shots/gpu-view-pressure.png) |
 
-| GPU 版 · 竖屏（物体长轴顺着风） |
-| --- |
-| ![竖屏](shots/gpu-portrait.png) |
+| GPU 版 · 导入图片（原图直接画，不糊） | GPU 版 · 竖屏（物体长轴顺着风） |
+| --- | --- |
+| ![导入图片](shots/gpu-sharp.png) | ![竖屏](shots/gpu-portrait.png) |
 
 > 画笔/橡皮的落点、物体摆放、图片朝向都有 `?selftest=1` 的数字回归（15 项），
 > 无头截图拍不到 boot 阶段的绘制，这几项看数字就行。
