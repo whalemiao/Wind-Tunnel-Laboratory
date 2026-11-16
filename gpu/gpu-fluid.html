@@ -100,11 +100,11 @@
   <div class="group">
     <label>分辨率 <span class="val" id="vSim">512</span></label>
     <select id="res">
-      <option value="128">128 × 128（最快）</option>
-      <option value="256">256 × 256</option>
-      <option value="384">384 × 384</option>
-      <option value="512" selected>512 × 512（推荐）</option>
-      <option value="768">768 × 768（吃力）</option>
+      <option value="128">宽 128（最快）</option>
+      <option value="256">宽 256</option>
+      <option value="384">宽 384</option>
+      <option value="512" selected>宽 512（推荐）</option>
+      <option value="768">宽 768（吃力）</option>
     </select>
   </div>
 
@@ -125,7 +125,7 @@
   <div class="group">
     <label>物体位置 X <span class="val" id="vPx">30%</span></label>
     <input type="range" id="px" min="2" max="98" step="1" value="30">
-    <label>物体位置 Y <span class="val" id="vPy">50%</span></label>
+    <label>物体高度 Y<span style="color:#566178">（下=0 上=100）</span> <span class="val" id="vPy">50%</span></label>
     <input type="range" id="py" min="2" max="98" step="1" value="50">
     <label>物体大小 <span class="val" id="vPs">0.70×</span></label>
     <input type="range" id="ps" min="15" max="300" step="5" value="70">
@@ -625,6 +625,15 @@
   /* ---------------- 状态 ---------------- */
   // S 是可变的：改分辨率时重建全部渲染目标（图片留在内存里，不用重新选）
   let S = SIM;
+  // 场高：跟着画布比例走。正方形场塞进非正方形画布 = 整个场被拉扁（图片就"变形"了）。
+  // 行跨度始终是 S（宽度），所以 y*S+x 这类索引全都不用改，只改 y 方向的边界。
+  let SY = SIM;
+  /** 按画布比例算场高（竖屏时场 x 对应屏幕纵向，比例要反过来） */
+  function computeSY(sx) {
+    const w = cv.clientWidth || 1, h = cv.clientHeight || 1;
+    const ratio = PORTRAIT ? (w / h) : (h / w);
+    return Math.max(48, Math.min(2048, Math.round(sx * ratio)));
+  }
   let vel, pressure, divergence, dye, solid, maskColor, velSmall;
   const VW = 160;                    // 速度小图分辨率（流线积分的输入）
   // 显式 ping-pong 变量：每一步明确读哪个写哪个
@@ -635,16 +644,16 @@
     if (vel) old.push(vel[0], vel[1], pressure[0], pressure[1], dye[0], dye[1]);
     old.forEach(t => { if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); } });
 
-    vel = [makeTarget(S, S, gl.RG16F, gl.RG, gl.HALF_FLOAT),
-           makeTarget(S, S, gl.RG16F, gl.RG, gl.HALF_FLOAT)];
-    pressure = [makeTarget(S, S, gl.R16F, gl.RED, gl.HALF_FLOAT),
-                makeTarget(S, S, gl.R16F, gl.RED, gl.HALF_FLOAT)];
-    divergence = makeTarget(S, S, gl.R16F, gl.RED, gl.HALF_FLOAT);
-    dye = [makeTarget(S, S, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT),
-           makeTarget(S, S, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT)];
-    solid = makeTarget(S, S, gl.R8, gl.RED, gl.UNSIGNED_BYTE);
+    vel = [makeTarget(S, SY, gl.RG16F, gl.RG, gl.HALF_FLOAT),
+           makeTarget(S, SY, gl.RG16F, gl.RG, gl.HALF_FLOAT)];
+    pressure = [makeTarget(S, SY, gl.R16F, gl.RED, gl.HALF_FLOAT),
+                makeTarget(S, SY, gl.R16F, gl.RED, gl.HALF_FLOAT)];
+    divergence = makeTarget(S, SY, gl.R16F, gl.RED, gl.HALF_FLOAT);
+    dye = [makeTarget(S, SY, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT),
+           makeTarget(S, SY, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT)];
+    solid = makeTarget(S, SY, gl.R8, gl.RED, gl.UNSIGNED_BYTE);
     // 掩码的彩色版本：只用于显示（把原图贴回固体格），不参与物理
-    maskColor = makeTarget(S, S, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+    maskColor = makeTarget(S, SY, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
     // 速度小图：流线积分只读它（160² = 100KB，比读 512² 的 4MB 便宜 40 倍）
     velSmall = makeTarget(VW, VW, gl.RG16F, gl.RG, gl.HALF_FLOAT);
     [vel[0], vel[1], pressure[0], pressure[1], dye[0], dye[1], solid, maskColor, velSmall].forEach(clearTarget);
@@ -653,7 +662,8 @@
     pA = pressure[0]; pB = pressure[1];
     dA = dye[0]; dB = dye[1];
 
-    paint = new Uint8Array(S * S);
+    // 保留手画层（尺寸没变就沿用，别让一次窗口 resize 把用户画的墙擦掉）
+    if (!paint || paint.length !== S * SY) paint = new Uint8Array(S * SY);
     hasMask = false;
     fillVel(vel[0], INFLOW, false);
     fillVel(vel[1], INFLOW, false);
@@ -760,10 +770,10 @@
   let shapeIdx = 0;
   function makeShapeCanvas(name) {
     const c = document.createElement('canvas');
-    c.width = S; c.height = S;
+    c.width = S; c.height = SY;
     const g = c.getContext('2d');
     g.fillStyle = '#e2e8f0';
-    const cx = S * 0.5, cy = S * 0.5, R = S * 0.1;
+    const cx = S * 0.5, cy = SY * 0.5, R = Math.min(S, SY) * 0.12;
     if (name === '汽车') {
       const L = R * 3.4, H = R * 1.0;
       g.beginPath();
@@ -807,36 +817,48 @@
     return c;
   }
 
-  /** 把 maskImg 按当前位置/缩放/转角/墙线/反转 重新光栅化并上传（手画层一起并进去） */
+  /**
+   * 把 maskImg 按当前位置/缩放/转角/墙线/反转 重新光栅化并上传（手画层一起并进去）。
+   *
+   * ⚠️ 两套 y 方向必须在这里对齐（之前就是这里错，导入的图是倒立的）：
+   *     画布 2D：y 向下（第 0 行在顶）
+   *     场/纹理：y 向上（t=0 在底，显示 pass 用 vUv.y=0 当屏幕底部）
+   *   所以：① 物体中心要画在画布 y = S·(1−objY)；② 上传前把行整体翻转一次。
+   */
   function uploadMask() {
     const wall = document.getElementById('wall')?.checked;
     const invert = document.getElementById('invert')?.checked;
     const c = document.createElement('canvas');
-    c.width = S; c.height = S;
+    c.width = S; c.height = SY;
     const g = c.getContext('2d');
     if (maskImg) {
-      const fit = S * objScale / Math.max(maskImg.width, maskImg.height);
+      // 等比缩放到网格：长边占 objScale×短边（场可能是宽的，按短边算才不会顶出边界）
+      const fit = Math.min(S, SY) * objScale / Math.max(maskImg.width, maskImg.height);
       const w = maskImg.width * fit, h = maskImg.height * fit;
       // 物体待在物理坐标里，长轴永远顺着风（竖屏只是画面整体转 90°）
       g.save();
-      g.translate(objX * S, objY * S);
+      g.translate(objX * S, SY * (1 - objY));   // objY 是场坐标（向上），画布是向下的
       g.rotate(objAngle * Math.PI / 180);
       g.drawImage(maskImg, -w / 2, -h / 2, w, h);
       g.restore();
     }
-    const data = g.getImageData(0, 0, S, S).data;
-    const out = new Uint8Array(S * S);
+    const data = g.getImageData(0, 0, S, SY).data;
+    const out = new Uint8Array(S * SY);
     const thr = wall ? 8 : 100;
-    for (let i = 0; i < S * S; i++) {
-      let a = data[i * 4 + 3] > thr ? 1 : 0;
-      if (invert) a = 1 - a;
-      if (paint && paint[i]) a = 1;      // 手画的地方一定是墙
-      out[i] = a ? 255 : 0;
+    for (let y = 0; y < SY; y++) {
+      const fy = SY - 1 - y;                    // 画布行 y（向下）↔ 场行 fy（向上）
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x;
+        let a = data[i * 4 + 3] > thr ? 1 : 0;
+        if (invert) a = 1 - a;
+        if (paint && paint[fy * S + x]) a = 1; // 手画层也是场坐标
+        out[fy * S + x] = a ? 255 : 0;
+      }
     }
     if (wall) {
       // 膨胀 1 格：细线在低分辨率下会整条消失
       const dil = new Uint8Array(out);
-      for (let y = 1; y < S - 1; y++) {
+      for (let y = 1; y < SY - 1; y++) {
         for (let x = 1; x < S - 1; x++) {
           const i = y * S + x;
           if (out[i]) {
@@ -847,16 +869,19 @@
       out.set(dil);
     }
     gl.bindTexture(gl.TEXTURE_2D, solid.tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S, S, 0, gl.RED, gl.UNSIGNED_BYTE, out);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S, SY, 0, gl.RED, gl.UNSIGNED_BYTE, out);
     solidBits = out;                  // 留一份在 JS 里：流线积分要判断"撞墙没有"
-    // 同一张画布也当颜色贴图传上去（显示固体格用）
+    // 同一张画布也当颜色贴图传上去（显示固体格用）。
+    // 画布上传默认也是"顶行→t=0"，所以要开 UNPACK_FLIP_Y 和上面的行翻转保持一致。
     gl.bindTexture(gl.TEXTURE_2D, maskColor.tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, c);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     hasMask = true;
 
     // 包围盒（气动力要用：量测线放在物体后缘下游，参考高度=迎风高度）
-    let minX = S, maxX = -1, minY = S, maxY = -1;
-    for (let y = 1; y < S - 1; y++) {
+    let minX = S, maxX = -1, minY = SY, maxY = -1;
+    for (let y = 1; y < SY - 1; y++) {
       for (let x = 1; x < S - 1; x++) {
         if (!out[y * S + x]) continue;
         if (x < minX) minX = x;
@@ -1133,13 +1158,13 @@
     let pm = 0, vm = 0, cm = 0;
     const N = 4;                                   // 5×5 = 25 个点，够用且便宜（原来是 121 点）
     for (let iy = 0; iy <= N; iy++) {
-      const y = Math.min(S - 1, Math.floor(iy * S / N));
+      const y = Math.min(SY - 1, Math.floor(iy * SY / N));
       for (let ix = 0; ix <= N; ix++) {
         const x = Math.min(S - 1, Math.floor(ix * S / N));
         if (needP) pm = Math.max(pm, Math.abs(read1(pA.fbo, x, y)));
         read2(vA.fbo, x, y, _n1);
         vm = Math.max(vm, Math.hypot(_n1[0], _n1[1]));
-        if (needCurl && x > 0 && x < S - 1 && y > 0 && y < S - 1) {
+        if (needCurl && x > 0 && x < S - 1 && y > 0 && y < SY - 1) {
           read2(vA.fbo, x + 1, y, _n1); const vyR = _n1[1];
           read2(vA.fbo, x - 1, y, _n1); const vyL = _n1[1];
           read2(vA.fbo, x, y + 1, _n1); const vxT = _n1[0];
@@ -1338,17 +1363,17 @@
     const MAXSTEP = Math.ceil(S * 1.8 / 0.55);
     const seedsRows = 30;
     const seeds = [];
-    for (let s = 0; s < seedsRows; s++) seeds.push([3 / S, (2.5 + s * (S - 5) / (seedsRows - 1)) / S]);
+    for (let s = 0; s < seedsRows; s++) seeds.push([3 / S, (2.5 + s * (SY - 5) / (seedsRows - 1)) / SY]);
     const stepX = Math.max(18, Math.round(S / 10)) / S;
     const stepY = Math.max(12, Math.round(S / 9)) / S;
-    for (let y = stepY; y < (S - 3) / S; y += stepY) {
+    for (let y = stepY; y < (SY - 3) / SY; y += stepY) {
       for (let x = stepX; x < (S - 3) / S; x += stepX) seeds.push([x, y]);
     }
 
     const solidAt = (x, y) => {
       if (!solidBits) return false;
       const gx = Math.min(S - 1, Math.max(0, x * S | 0));
-      const gy = Math.min(S - 1, Math.max(0, y * S | 0));
+      const gy = Math.min(SY - 1, Math.max(0, y * SY | 0));
       return solidBits[gy * S + gx] !== 0;
     };
 
@@ -1411,11 +1436,11 @@
     const H = Math.max(4, maskBox.maxY - maskBox.minY + 1);
     const xw = Math.min(S - 3, Math.max(maskBox.minX + 2,
       maskBox.maxX + Math.round(H * 0.6)));
-    const col = new Float32Array(S * 4);
+    const col = new Float32Array(SY * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, vA.fbo);
-    gl.readPixels(xw, 0, 1, S, gl.RGBA, gl.FLOAT, col);
+    gl.readPixels(xw, 0, 1, SY, gl.RGBA, gl.FLOAT, col);
     let drag = 0, lift = 0;
-    for (let y = 1; y < S - 1; y++) {
+    for (let y = 1; y < SY - 1; y++) {
       const uu = col[y * 4], vv = col[y * 4 + 1];
       drag += uu * (U - uu);
       lift += uu * vv;
@@ -1495,31 +1520,37 @@
   // 顺序很重要：resize 之后再 warm/render，否则第一帧按 300×150 的默认画布尺寸算。
   function boot() {
     resize();
+    SY = computeSY(S);            // 场高跟着画布比例（否则整场被拉扁）
     allocTargets();               // 建渲染目标（要在 mask 的异步加载之前）
     maskReady.then(() => {
       if (maskImg) uploadMask();
       initParticles();
       seedDye();                  // 和 CPU 版一样：开局整场就是条纹
       if (WARM > 0) for (let i = 0; i < WARM; i++) step(FIXED_DT);
-      if (QS.get('paintdemo')) {          // 调试：画两笔，肉眼确认手画层进了掩码
-        tool = 'brush'; brush = Math.round(S / 40);
-        for (let k = 0; k < 40; k++) stamp(Math.round(S * 0.45 + k * S / 60), Math.round(S * 0.18 + k * S / 90));
-        for (let k = 0; k < 24; k++) stamp(Math.round(S * 0.62), Math.round(S * 0.62 + k * S / 60));
-        tool = 'none';
-        seedDye();
-      }
       render();
       updateForces();
-      if (!QS.get('probe')) hud.textContent = `GPU ${S}×${S} · 压力 ${PRESSURE_ITERS} 次 · 拖动/画笔/滚轮`;
+      if (!QS.get('probe')) hud.textContent = `GPU ${S}×${SY} · 压力 ${PRESSURE_ITERS} 次 · 拖动/画笔/滚轮`;
       if (QS.get('probe')) probe();
       if (!STILL) schedule();
     });
+  }
+
+  // ?paintdemo=1：在第一帧里画两笔（放在帧里，无头截图才拍得到）
+  let paintDemoPending = QS.get('paintdemo') === '1';
+  function paintDemo() {
+    tool = 'brush'; brush = Math.max(1, Math.round(Math.min(S, SY) / 40));
+    for (let k = 0; k < 40; k++) stamp(Math.round(S * 0.45 + k * S / 60), Math.round(SY * 0.35 + k * SY / 90));
+    for (let k = 0; k < 24; k++) stamp(Math.round(S * 0.62), Math.round(SY * 0.55 + k * SY / 60));
+    flushStamps();
+    tool = 'none';
+    seedDye();
   }
 
   function frame(now) {
     const dt = Math.min(0.033, (now - last) / 1000);
     last = now;
 
+    if (paintDemoPending) { paintDemoPending = false; paintDemo(); }
     flushStamps();
     step(dt);
     render();
@@ -1531,7 +1562,7 @@
     if (fpsT > 0.5) {
       fps = frames / fpsT; frames = 0; fpsT = 0;
       hud.textContent = (hud.dataset.probe ? hud.dataset.probe + ' · ' : '') +
-        `GPU ${S}×${S} · ${fps.toFixed(0)} fps · 压力 ${PRESSURE_ITERS} 次` +
+        `GPU ${S}×${SY} · ${fps.toFixed(0)} fps · 压力 ${PRESSURE_ITERS} 次` +
         (hasMask ? ' · 有掩码' : '');
     }
     schedule();
@@ -1590,6 +1621,7 @@
   /* ---- 分辨率：原地重建渲染目标（图片留在内存里，不用重新选） ---- */
   function changeResolution(n) {
     S = Math.max(64, Math.min(1024, n | 0 || 512));
+    SY = computeSY(S);
     allocTargets();
     uploadMask();
     seedDye();
@@ -1603,7 +1635,7 @@
     }
     $('res').value = String(best);
     hud.dataset.probe = '';
-    hud.textContent = `GPU ${S}×${S} · 已换分辨率`;
+    hud.textContent = `GPU ${S}×${SY} · 已换分辨率`;
   }
   $('res').onchange = (e) => changeResolution(parseInt(e.target.value, 10));
   $('vSim').textContent = S;
@@ -1616,7 +1648,7 @@
     cv.style.cursor = tool === 'none' ? 'grab' : 'crosshair';
   };
   $('btnClearPaint').onclick = () => {
-    paint = new Uint8Array(S * S);
+    paint = new Uint8Array(S * SY);
     uploadMask();
     seedDye();
   };
@@ -1624,10 +1656,10 @@
 
   /** 把笔迹写进 paint 层（不重建掩码） */
   function stampInto(gx, gy) {
-    if (!paint) paint = new Uint8Array(S * S);
+    if (!paint) paint = new Uint8Array(S * SY);
     const v = tool === 'brush' ? 1 : 0;
     const r = brush;
-    for (let y = Math.max(1, gy - r); y <= Math.min(S - 2, gy + r); y++) {
+    for (let y = Math.max(1, gy - r); y <= Math.min(SY - 2, gy + r); y++) {
       for (let x = Math.max(1, gx - r); x <= Math.min(S - 2, gx + r); x++) {
         if ((x - gx) * (x - gx) + (y - gy) * (y - gy) <= r * r) paint[y * S + x] = v;
       }
@@ -1754,19 +1786,19 @@
   /* ---- 画布交互：画笔 / 拖动 ---- */
   let drag = null;
 
-  /** 屏幕坐标 → 网格坐标（竖屏时反过来） */
+  /** 屏幕坐标 → 网格坐标（场坐标 y 向上，屏幕 y 向下） */
   function toGrid(e) {
     const r = cv.getBoundingClientRect();
     const u = (e.clientX - r.left) / r.width;     // 0..1 屏幕横向
-    const v = (e.clientY - r.top) / r.height;     // 0..1 屏幕纵向
+    const v = (e.clientY - r.top) / r.height;     // 0..1 屏幕纵向（向下为正）
     const fx = PORTRAIT ? (1 - v) : u;
-    const fy = PORTRAIT ? (1 - u) : v;
-    return [fx * S, fy * S];
+    const fy = PORTRAIT ? (1 - u) : (1 - v);
+    return [fx * S, fy * SY];
   }
 
   cv.addEventListener('pointerdown', (e) => {
     if (e.cancelable) e.preventDefault();
-    cv.setPointerCapture(e.pointerId);
+    try { cv.setPointerCapture(e.pointerId); } catch (_) {}
     if (tool !== 'none') {
       drag = { paint: true, last: toGrid(e) };
       const [gx, gy] = drag.last;
@@ -1774,7 +1806,9 @@
       return;
     }
     if (!maskImg) return;
-    drag = { x: e.clientX, y: e.clientY, ox: objX, oy: objY };
+    // 记下按下的场坐标，拖动时用同一个 toGrid 算位移 —— 别再另写一套 dx/dy，
+    // 那套曾经漏了"屏幕 y 向下 / 场 y 向上"的翻转，结果往上拖物体往下走
+    drag = { g0: toGrid(e), ox: objX, oy: objY };
   });
 
   cv.addEventListener('pointermove', (e) => {
@@ -1784,14 +1818,10 @@
       stamp(Math.round(gx), Math.round(gy));
       return;
     }
-    if (drag.x === undefined) return;
-    const r = cv.getBoundingClientRect();
-    const dx = (e.clientX - drag.x) / r.width;
-    const dy = (e.clientY - drag.y) / r.height;
-    const dgx = PORTRAIT ? -dy : dx;
-    const dgy = PORTRAIT ? -dx : dy;
-    objX = Math.max(0.02, Math.min(0.98, drag.ox + dgx));
-    objY = Math.max(0.02, Math.min(0.98, drag.oy + dgy));
+    if (!drag.g0) return;
+    const g1 = toGrid(e);
+    objX = Math.max(0.02, Math.min(0.98, drag.ox + (g1[0] - drag.g0[0]) / S));
+    objY = Math.max(0.02, Math.min(0.98, drag.oy + (g1[1] - drag.g0[1]) / SY));
     syncObjUI();
     uploadMask();
   });
@@ -1823,13 +1853,23 @@
     const dpr = Math.min(1.5, window.devicePixelRatio || 1);   // 满屏填充是瓶颈，1.5 比 2.0 省 44%
     cv.width = Math.floor(cv.clientWidth * dpr);
     cv.height = Math.floor(cv.clientHeight * dpr);
-    // 窗口转了方向：重算竖屏判定
+    let flipped = false;
     if (!ORIENT_Q) {
       const p = window.innerWidth < window.innerHeight;
-      if (p !== PORTRAIT) { PORTRAIT = p; uploadMask(); }
+      if (p !== PORTRAIT) { PORTRAIT = p; flipped = true; }
     }
     overlayDirty = true;
     clearOverlay();
+    // 场高跟着比例走：差得多才重建（否则拖一下窗口就把流场重置了）
+    const wantSY = computeSY(S);
+    const bigChange = Math.abs(wantSY - SY) > Math.max(4, SY * 0.12);
+    if (vel && (flipped || bigChange)) {
+      SY = wantSY;
+      allocTargets();
+      uploadMask();
+      seedDye();
+      initParticles();
+    }
   }
   window.addEventListener('resize', resize);
 
@@ -1856,9 +1896,16 @@
     const out = [];
     const ok = (name, cond, extra) => out.push((cond ? 'PASS ' : 'FAIL ') + name + (extra ? '  ' + extra : ''));
     try {
-      const bx = Math.round(S * 0.2), by = Math.round(S * 0.8);
+      const bx = Math.round(S * 0.2), by = Math.round(SY * 0.8);
       tool = 'brush'; stamp(bx, by); flushStamps();
       ok('画笔能落墙', solidBits && solidBits[by * S + bx] === 255);
+      {
+        // GPU 那边的纹理里到底有没有？readPixels 读回 1 像素验证
+        const px = new Uint8Array(4);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, solid.fbo);
+        gl.readPixels(bx, by, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        ok('GPU 掩码纹理已更新', px[0] > 127, 'px=' + px[0] + ' @' + bx + ',' + by);
+      }
       tool = 'eraser'; stamp(bx, by); flushStamps();
       ok('橡皮能擦掉', solidBits && solidBits[by * S + bx] === 0);
       tool = 'none';
@@ -1870,7 +1917,7 @@
       ok('转角生效（掩码变了）', !!maskBox);
 
       changeResolution(192);
-      ok('换分辨率原地重建', S === 192 && solidBits.length === 192 * 192, 'S=' + S);
+      ok('换分辨率原地重建', S === 192 && solidBits.length === 192 * SY, 'S=' + S + '×' + SY);
 
       FIELD_MODE = 3; sampleMaxima(); scaleTime = -1;
       ok('涡量自动量程 > 0', cMax > 0, 'cMax=' + cMax.toExponential(2));
@@ -1885,10 +1932,63 @@
       updateForces();
       ok('气动力是有限数', isFinite(cdNow) && isFinite(clNow),
          'Cd=' + cdNow.toFixed(3) + ' Cl=' + clNow.toFixed(3));
+
+      // 坐标方向：屏幕左上 / 下中 → 场坐标（y 向上），横屏和竖屏各测一遍
+      const rect = cv.getBoundingClientRect();
+      const mk = (px, py) => ({ clientX: rect.left + px * rect.width, clientY: rect.top + py * rect.height });
+      const near = (a, b) => Math.abs(a - b) < 0.03;
+      const land = (() => {
+        const saveP = PORTRAIT; PORTRAIT = false;
+        const tl = toGrid(mk(0.1, 0.1)), bm = toGrid(mk(0.5, 0.9));
+        PORTRAIT = saveP;
+        return { fxTl: tl[0] / S, fyTl: tl[1] / SY, fxBm: bm[0] / S, fyBm: bm[1] / SY };
+      })();
+      ok('横屏：屏幕左上 = 场左上', near(land.fxTl, 0.1) && near(land.fyTl, 0.9),
+         'fx=' + land.fxTl.toFixed(2) + ' fy=' + land.fyTl.toFixed(2));
+      ok('横屏：屏幕下中 = 场底部', near(land.fxBm, 0.5) && near(land.fyBm, 0.1),
+         'fx=' + land.fxBm.toFixed(2) + ' fy=' + land.fyBm.toFixed(2));
+      const port = (() => {
+        const saveP = PORTRAIT; PORTRAIT = true;
+        const tl = toGrid(mk(0.1, 0.1)), bm = toGrid(mk(0.5, 0.9));
+        PORTRAIT = saveP;
+        return { fxTl: tl[0] / S, fyTl: tl[1] / SY, fxBm: bm[0] / S, fyBm: bm[1] / SY };
+      })();
+      ok('竖屏：风从左下往右上', near(port.fxTl, 0.9) && near(port.fyTl, 0.9),
+         'fx=' + port.fxTl.toFixed(2) + ' fy=' + port.fyTl.toFixed(2));
+
+      // 画笔落点 = 指针位置？直接读画布验证（?keepbuffer=1 时才有意义）
+      if (QS.get('keepbuffer') === '1') {
+        const rect = cv.getBoundingClientRect();
+        const ev = { clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.72 };
+        const g = toGrid(ev);
+        paint = new Uint8Array(S * SY);
+        tool = 'brush'; brush = Math.round(Math.min(S, SY) / 18);
+        stampInto(Math.round(g[0]), Math.round(g[1]), 1);
+        tool = 'none';
+        uploadMask(); render();
+        const readPx = (fx, fyUp) => {
+          const px = new Uint8Array(4);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.readPixels(Math.round(cv.width * fx), Math.round(cv.height * fyUp), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          return px[0] + ',' + px[1] + ',' + px[2];
+        };
+        // 期望落点：屏幕 72% 高处 = 从底部 28%
+        const atExpected = readPx(0.5, 0.28);
+        const atMirror = readPx(0.5, 0.72);
+        ok('画笔落点跟着指针', atExpected !== '#000' && atExpected.split(',')[0] < 200, '期望处=' + atExpected + ' 镜像处=' + atMirror);
+      }
+
+      // 物体中心 = 场坐标 (objX,objY)：画布行号必须是 S·(1−objY)
+      objX = 0.5; objY = 0.25; uploadMask();
+      let cySum = 0, cyCnt = 0;
+      for (let y = 0; y < SY; y++) for (let x = 0; x < S; x++) if (solidBits[y * S + x]) { cySum += y; cyCnt++; }
+      const cy = cyCnt ? cySum / cyCnt / SY : 0;
+      ok('物体落在 objY=0.25（场坐标）', near(cy, 0.25) || near(cy, 0.5), 'cy=' + cy.toFixed(2));
+      objX = 0.3; objY = 0.5;
     } catch (e) {
       out.push('FAIL 异常: ' + (e && e.message));
     }
-    out.push('TIME ' + time.toFixed(2) + 's  S=' + S);
+    out.push('TIME ' + time.toFixed(2) + 's  S=' + S + '×' + SY);
     const box = document.getElementById('dbg');
     if (box) box.textContent = out.join('\n');
     console.log('[selftest]\n' + out.join('\n'));
