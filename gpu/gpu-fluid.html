@@ -7,8 +7,44 @@
 <style>
   html, body { margin: 0; height: 100%; background: #05070d; overflow: hidden; }
   #cv { display: block; width: 100%; height: 100%; }
+  body:not(.collapsed) #cv { margin-left: 220px; width: calc(100% - 220px); }
+  #side {
+    position: fixed; left: 0; top: 0; bottom: 0; width: 220px; z-index: 10;
+    background: rgba(13,17,25,.94); border-right: 1px solid #1e2534;
+    padding: 12px; overflow-y: auto; color: #c9d3e8;
+    font: 12px/1.7 system-ui, "Microsoft YaHei", sans-serif;
+    transition: transform .2s;
+  }
+  #side h1 { font-size: 13px; margin: 26px 0 2px; }
+  #side .sub { font-size: 10.5px; color: #67748c; margin-bottom: 10px; }
+  #side label { display: block; font-size: 11px; color: #8b9ab8; margin: 10px 0 3px; }
+  #side .val { float: right; color: #5eead4; font-family: ui-monospace, monospace; }
+  #side button, #side select {
+    width: 100%; padding: 7px 9px; margin-top: 6px; border-radius: 8px;
+    border: 1px solid #232b3e; background: #141a26; color: #cfd8ea;
+    font: inherit; cursor: pointer;
+  }
+  #side button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+  #side button:hover { background: #1b2333; }
+  #side button.primary:hover { background: #1d4ed8; }
+  #side .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+  #side .seg button { margin: 0; }
+  #side .seg button.on { background: #0e7490; border-color: #0e7490; color: #e6feff; }
+  #side input[type=range] { width: 100%; accent-color: #2dd4bf; }
+  .chk { display: flex; align-items: center; gap: 7px; font-size: 11.5px !important;
+         color: #8b9ab8; margin-top: 8px !important; cursor: pointer; }
+  .chk input { accent-color: #2dd4bf; }
+  .hint { font-size: 10.5px; color: #566178; margin-top: 14px; line-height: 1.6; }
+  #btnPanel {
+    position: fixed; left: 232px; top: 10px; z-index: 20; width: 34px; height: 34px;
+    border-radius: 9px; border: 1px solid #232b3e; background: rgba(16,20,31,.85);
+    color: #dbe2f3; cursor: pointer; font-size: 14px; transition: left .2s;
+  }
+  body.collapsed #side { transform: translateX(-100%); }
+  body.collapsed #hud { left: 12px; }
+  body.collapsed #btnPanel { left: 10px; }
   #hud {
-    position: fixed; left: 12px; top: 12px; color: #9fb0cc;
+    position: fixed; left: 250px; top: 12px; color: #9fb0cc;
     font: 12px/1.6 ui-monospace, Consolas, monospace; pointer-events: none;
     text-shadow: 0 1px 2px #000;
   }
@@ -18,6 +54,44 @@
 </head>
 <body>
 <canvas id="cv"></canvas>
+<button id="btnPanel">☰</button>
+<aside id="side">
+  <h1>风洞实验室 · GPU</h1>
+  <div class="sub">WebGL2 · 着色器求解</div>
+
+  <button id="btnPick" class="primary">选择图片</button>
+  <input type="file" id="file" accept="image/*" hidden>
+  <label class="chk"><input type="checkbox" id="wall"> 墙线模式（细线当墙）</label>
+  <label class="chk"><input type="checkbox" id="invert"> 反转（透明处当墙）</label>
+
+  <label>预设</label>
+  <select id="presets">
+    <option value="">（不用预设）</option>
+    <option value="car2">跑车</option>
+    <option value="karman">双柱</option>
+    <option value="rocks1">岩石</option>
+    <option value="ufo">飞碟</option>
+    <option value="airfoil1">翼型</option>
+    <option value="triangle">三角</option>
+  </select>
+
+  <label>风速 <span class="val" id="vSpeed">0.35</span></label>
+  <input type="range" id="speed" min="0.05" max="1" step="0.01" value="0.35">
+
+  <label>涡量强度 <span class="val" id="vCurl">28</span></label>
+  <input type="range" id="curl" min="0" max="60" step="1" value="28">
+
+  <label>压力迭代 <span class="val" id="vIters">24</span></label>
+  <input type="range" id="iters" min="4" max="60" step="2" value="24">
+
+  <label>显示</label>
+  <div class="seg" id="view">
+    <button data-v="dye" class="on">烟</button>
+    <button data-v="vel">速度</button>
+  </div>
+
+  <div class="hint">拖动画面移动障碍物 · 双击复位</div>
+</aside>
 <div id="hud">WebGL2 GPU 求解器 · 移植中</div>
 <div id="err"></div>
 <script>
@@ -30,10 +104,12 @@
 
   const QS = new URLSearchParams(location.search);
   const SIM = parseInt(QS.get('sim') || '512', 10);      // 模拟分辨率（正方形网格）
-  const PRESSURE_ITERS = parseInt(QS.get('iters') || '24', 10);
+  let PRESSURE_ITERS = parseInt(QS.get('iters') || '24', 10);
   const VEL_DISS = parseFloat(QS.get('vdis') || '0.994');
   const DYE_DISS = parseFloat(QS.get('ddis') || '0.999');
-  const SPEED = parseFloat(QS.get('speed') || '1.0');
+  let SPEED = parseFloat(QS.get('speed') || '1.0');
+  let CURL_AMT = parseFloat(QS.get('curl') || '28');
+  let INFLOW = parseFloat(QS.get('inflow') || '0.35');
   const VIEW_VEL = QS.get('view') === 'vel';
 
   const gl = cv.getContext('webgl2', { alpha: false, antialias: false, depth: false });
@@ -108,6 +184,7 @@
   uniform sampler2D uPressure;
   uniform sampler2D uVel;
   uniform sampler2D uSolid;
+  uniform float uInflow;
   void main(){
     if (texture(uSolid, vUv).r > 0.5) { fragColor = vec4(0.0,0.0,0.0,1.0); return; }
     float L = texture(uPressure, vUv - vec2(texel.x,0.0)).x;
@@ -116,7 +193,7 @@
     float T = texture(uPressure, vUv + vec2(0.0,texel.y)).x;
     vec2 v = texture(uVel, vUv).xy - 0.5 * vec2(R - L, T - B);
     // 进出口保持 Dirichlet：入口吹入、出口自由流出
-    if (vUv.x < 0.03 || vUv.x > 0.97) v = vec2(0.35, 0.0);
+    if (vUv.x < 0.03 || vUv.x > 0.97) v = vec2(uInflow, 0.0);
     fragColor = vec4(v, 0.0, 1.0);
   }`;
 
@@ -325,27 +402,56 @@
 
   /* ---------------- 障碍物掩码 ---------------- */
   let hasMask = false;
-  const maskUrl = QS.get('img') || (QS.get('preset') ? 'presets/' + QS.get('preset') + '.png' : '');
-  if (maskUrl) {
-    const im = new Image();
-    im.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = S; c.height = S;
-      const g = c.getContext('2d');
-      // 图片按 70% 宽、居中放置；alpha 当掩码
-      const fit = Math.min(S * 0.7 / im.width, S * 0.7 / im.height);
-      const w = im.width * fit, h = im.height * fit;
-      g.drawImage(im, S * 0.3 - w / 2, (S - h) / 2, w, h);
-      const data = g.getImageData(0, 0, S, S).data;
-      const out = new Uint8Array(S * S);
-      for (let i = 0; i < S * S; i++) out[i] = data[i * 4 + 3] > 100 ? 255 : 0;
-      gl.bindTexture(gl.TEXTURE_2D, solid.tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S, S, 0, gl.RED, gl.UNSIGNED_BYTE, out);
-      hasMask = true;
-    };
-    im.onerror = () => { hud.textContent = '掩码加载失败: ' + maskUrl; };
-    im.src = maskUrl;
+  let maskImg = null;                 // 当前障碍物图
+  let objX = 0.3, objY = 0.5, objScale = 0.7;
+
+  /** 把 maskImg 按当前位置/缩放/墙线/反转 重新光栅化并上传 */
+  function uploadMask() {
+    if (!maskImg) return;
+    const c = document.createElement('canvas');
+    c.width = S; c.height = S;
+    const g = c.getContext('2d');
+    const wall = document.getElementById('wall')?.checked;
+    const invert = document.getElementById('invert')?.checked;
+    const fit = Math.min(S * objScale / maskImg.width, S * objScale / maskImg.height) *
+                (wall ? 1 : 1);
+    const w = maskImg.width * fit, h = maskImg.height * fit;
+    g.drawImage(maskImg, objX * S - w / 2, objY * S - h / 2, w, h);
+    const data = g.getImageData(0, 0, S, S).data;
+    const out = new Uint8Array(S * S);
+    const thr = wall ? 8 : 100;
+    for (let i = 0; i < S * S; i++) {
+      let a = data[i * 4 + 3] > thr ? 1 : 0;
+      if (invert) a = 1 - a;
+      out[i] = a ? 255 : 0;
+    }
+    if (wall) {
+      // 膨胀 1 格：细线在低分辨率下会整条消失
+      const dil = new Uint8Array(out);
+      for (let y = 1; y < S - 1; y++) {
+        for (let x = 1; x < S - 1; x++) {
+          const i = y * S + x;
+          if (out[i]) {
+            dil[i - 1] = 255; dil[i + 1] = 255; dil[i - S] = 255; dil[i + S] = 255;
+          }
+        }
+      }
+      out.set(dil);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, solid.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S, S, 0, gl.RED, gl.UNSIGNED_BYTE, out);
+    hasMask = true;
   }
+
+  function loadMaskFromUrl(url) {
+    const im = new Image();
+    im.onload = () => { maskImg = im; uploadMask(); };
+    im.onerror = () => { hud.textContent = '掩码加载失败: ' + url; };
+    im.src = url;
+  }
+
+  const maskUrl = QS.get('img') || (QS.get('preset') ? 'presets/' + QS.get('preset') + '.png' : '');
+  if (maskUrl) loadMaskFromUrl(maskUrl);
 
   /* ---------------- 主循环 ---------------- */
   // 显式 ping-pong：每一步明确"读哪个、写哪个"，避免翻转计数出 bug
@@ -374,7 +480,7 @@
     blit(vB, P.vorticity, (u) => {
       bindTex(0, vA.tex, u.uVel);
       bindTex(1, solid.tex, u.uSolid);
-      gl.uniform1f(u.curlAmount, 28.0);
+      gl.uniform1f(u.curlAmount, CURL_AMT);
       gl.uniform1f(u.dt, dt);
     });
     [vA, vB] = [vB, vA];
@@ -382,7 +488,7 @@
     // 3) 入口速度边界
     blit(vB, P.inletVel, (u) => {
       bindTex(0, vA.tex, u.uVel);
-      gl.uniform1f(u.inflow, 0.35);
+      gl.uniform1f(u.inflow, INFLOW);
     });
     [vA, vB] = [vB, vA];
 
@@ -407,6 +513,7 @@
       bindTex(0, pA.tex, u.uPressure);
       bindTex(1, vA.tex, u.uVel);
       bindTex(2, solid.tex, u.uSolid);
+      gl.uniform1f(u.uInflow, INFLOW);
     });
     [vA, vB] = [vB, vA];
 
@@ -433,7 +540,7 @@
       bindTex(0, dA.tex, u.uDye);
       bindTex(1, vA.tex, u.uVel);
       bindTex(2, solid.tex, u.uSolid);
-      gl.uniform1i(u.mode, VIEW_VEL ? 1 : 0);
+      gl.uniform1i(u.mode, window.__viewVel ? 1 : 0);
     });
 
     // ── 数值探针：直接读回纹理，确认场里到底是多少 ──
@@ -461,6 +568,63 @@
     }
     requestAnimationFrame(frame);
   }
+
+  /* ---------------- UI ---------------- */
+  const $ = (id) => document.getElementById(id);
+
+  $('btnPanel').onclick = () => document.body.classList.toggle('collapsed');
+
+  $('btnPick').onclick = () => $('file').click();
+  $('file').onchange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    loadMaskFromUrl(url);
+    e.target.value = '';
+  };
+
+  $('presets').onchange = (e) => {
+    const n = e.target.value;
+    if (!n) return;
+    objX = 0.3; objY = 0.5; objScale = 0.7;
+    loadMaskFromUrl('presets/' + n + '.png');
+  };
+
+  $('wall').onchange = () => uploadMask();
+  $('invert').onchange = () => uploadMask();
+
+  $('speed').oninput = (e) => {
+    INFLOW = +e.target.value;
+    $('vSpeed').textContent = INFLOW.toFixed(2);
+    // 改风速要重置速度场，否则旧速度残留
+    fillVel(vel[0], INFLOW); fillVel(vel[1], INFLOW);
+    vA = vel[0]; vB = vel[1];
+  };
+  $('curl').oninput = (e) => { CURL_AMT = +e.target.value; $('vCurl').textContent = CURL_AMT; };
+  $('iters').oninput = (e) => { PRESSURE_ITERS = +e.target.value; $('vIters').textContent = PRESSURE_ITERS; };
+
+  $('view').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    [...$('view').children].forEach(x => x.classList.toggle('on', x === b));
+    window.__viewVel = b.dataset.v === 'vel';
+  };
+
+  // 拖动移动障碍物
+  let drag = null;
+  cv.addEventListener('pointerdown', (e) => {
+    if (!maskImg) return;
+    drag = { x: e.clientX, y: e.clientY, ox: objX, oy: objY };
+    cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const r = cv.getBoundingClientRect();
+    objX = Math.max(0.05, Math.min(0.95, drag.ox + (e.clientX - drag.x) / r.width));
+    objY = Math.max(0.05, Math.min(0.95, drag.oy + (e.clientY - drag.y) / r.height));
+    uploadMask();
+  });
+  cv.addEventListener('pointerup', () => { drag = null; });
+  cv.addEventListener('dblclick', () => { objX = 0.3; objY = 0.5; uploadMask(); });
 
   function resize() {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
