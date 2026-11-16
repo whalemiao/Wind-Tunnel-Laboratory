@@ -2,4 +2,6 @@
 desktop/bin/
 desktop/obj/
 dist-exe/
+out/
+android/app/src/main/assets/
 *.user
