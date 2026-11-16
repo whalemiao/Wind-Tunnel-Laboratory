@@ -108,7 +108,7 @@
 
   <div id="drop">拖透明底 PNG 进来<br>或点下面</div>
   <button id="btnPick" class="primary">选择图片</button>
-  <label class="chk"><input type="checkbox" id="autoBg" checked> 自动去背景</label>
+  <label class="chk"><input type="checkbox" id="autoBg"> 自动去背景（可能抠坏，默认关）</label>
   <label>预设 <span class="val" id="vPreset">—</span></label>
   <select id="presets">
     <option value="">（不用预设）</option>
@@ -196,6 +196,7 @@
     <input type="range" id="pa" min="0" max="359" step="1" value="0">
   </div>
   <div class="group">
+    <label class="chk"><input type="checkbox" id="outlineOn"> 物体白边</label>
     <label>烟色 <span class="val" id="vHue">190</span></label>
     <input type="range" id="hue" min="0" max="360" step="5" value="190">
     <label>亮度 <span class="val" id="vBright">0.70</span></label>
@@ -231,7 +232,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.5 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.6 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -329,7 +330,8 @@
   let fineMask = null;     // 染料级的固体掩码（高精度）
   let baseCanvas = null;   // 导入的原图副本（方便重新处理）
   let outlineCv = null;    // 物体轮廓（白色描边，参考 app 的做法）
-  let maskCv = null;       // 掩码填充层（把固体本身画出来，画笔才看得见）
+  let maskCv = null;       // 掩码填充层（手画部分）
+  let paintCv = null, paintCtx = null;   // 手画笔迹（高分辨率，圆头）
 
   // 多重网格：粗层（2×2 合并）缓冲
   const MG = { ready: false, W: 0, H: 0, solid: null, p: null, div: null, res: null };
@@ -385,7 +387,7 @@
     const stageW = (document.getElementById('stage') || {}).clientWidth || 1000;
     const dpr = window.devicePixelRatio || 1;
     const targetW = Math.max(900, Math.min(2200, Math.round(stageW * dpr)));
-    RS = Math.max(1, Math.min(6, Math.round(targetW / NX)));
+    RS = Math.max(1, Math.min(8, Math.round(targetW / NX)));
     if (PORTRAIT) { cv.width = NY * RS; cv.height = NX * RS; }
     else { cv.width = NX * RS; cv.height = NY * RS; }
     sceneTransform(ctx);
@@ -396,6 +398,12 @@
     fieldCtx = fieldCv.getContext('2d');
 
     // 染料单独一张高分辨率画布（条纹烟用）
+    // 手画笔迹层：网格 × RS，画笔才是圆的而不是方块
+    paintCv = document.createElement('canvas');
+    paintCv.width = NX * RS; paintCv.height = NY * RS;
+    paintCtx = paintCv.getContext('2d');
+    paintCtx.setTransform(RS, 0, 0, RS, 0, 0);
+
     dyeCv = document.createElement('canvas');
     dyeCv.width = DX; dyeCv.height = DY;
     dyeCtx = dyeCv.getContext('2d');
@@ -534,6 +542,17 @@
       for (let x = Math.max(1, gx - r); x <= Math.min(NX - 2, gx + r); x++) {
         if ((x - gx) * (x - gx) + (y - gy) * (y - gy) <= r * r) paint[at(x, y)] = v;
       }
+    }
+    // 同时在高分辨率笔迹层上画一个圆头笔触 —— 视觉上是圆的，不是方块
+    if (paintCv) {
+      const g = paintCtx;
+      g.save();
+      g.globalCompositeOperation = v ? 'source-over' : 'destination-out';
+      g.fillStyle = 'rgba(226,232,240,0.92)';
+      g.beginPath();
+      g.arc(gx, gy, r, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
     }
     mergePaint();
     buildOutline(solidD);
@@ -950,7 +969,18 @@
     // 采样用 sampleUF（已经过空间平滑 + 时间低通），比直接读 u/v 稳。
     // 染料：MacCormack（误差补偿）→ 涡丝更锐、不发糊
     dyeTmp.set(dye);
-    advectMC(dye, dyeTmp, dt, DX, DY,
+    if (mcOff) {
+      // 降级路径：普通半拉格朗日
+      for (let y = 1; y < DY - 1; y++) {
+        for (let x = 1; x < DX - 1; x++) {
+          const i = atD(x, y);
+          if (solidD[i]) { dye[i] = 0; continue; }
+          const cx = x / DS, cy = y / DS;
+          sampleUVCoarse(cx, cy, _s1);
+          dye[i] = bilerpD(dyeTmp, x - dt * _s1[0] * DS, y - dt * _s1[1] * DS) * 0.998;
+        }
+      }
+    } else advectMC(dye, dyeTmp, dt, DX, DY,
       // 细网格 x 方向的速度（粗格/秒 → 细格/秒）
       (x, y) => { const c = x / DS, d0 = y / DS; sampleUVCoarse(c, d0, _s1); return _s1[0] * DS; },
       (x, y) => { const c = x / DS, d0 = y / DS; sampleUVCoarse(c, d0, _s1); return _s1[1] * DS; },
@@ -1081,7 +1111,7 @@
   const seedsRows = 30;
   const _s1 = [0, 0], _s2 = [0, 0];
   function drawStreamlines(g, alpha) {
-    const Hh = 0.7;                       // 步长更小，曲线更顺
+    const Hh = 0.55;                      // 步长更细，曲线更顺
     const MAXSTEP = Math.ceil(NX * 1.8 / Hh);
     // 烟感关键：线细一点、透明度低一点、加辉光 → 叠起来像烟，不像钢笔线
     // 线宽要按 RS 反算，否则 RS=4 时线是 3.2 像素，看起来又粗又糊
@@ -1124,7 +1154,7 @@
         // 限制每步转角：速度场再抖，线本身也不会拐出折角
         let dx = (_s2[0] / sp2) * Hh, dy = (_s2[1] / sp2) * Hh;
         if (k > 0) {
-          const maxTurn = 0.07;   // 弧度，≈4°（越严越不容易出现折角）
+          const maxTurn = 0.10;   // 弧度，≈5.7°（配合更细步长，曲线更自然）
           const a0 = Math.atan2(_lastDy, _lastDx);
           const a1 = Math.atan2(dy, dx);
           let d = a1 - a0;
@@ -1142,7 +1172,11 @@
         window.__pts = (window.__pts || 0) + 1;
       }
       const t = Math.min(1, (si % seedsRows) / (seedsRows - 1));
-      g.strokeStyle = `rgba(${(90 + 50 * t) | 0},${(200 - 30 * t) | 0},252,${alpha})`;
+      // 亮度随速度：快的地方更亮，慢的地方偏暗 —— 看起来才有"流动感"
+      const ci = clampCell(x | 0, y | 0);
+      const spd = Math.min(1, Math.hypot(us[ci] || 0, vs[ci] || 0) / (U0 * speed * 1.2 || 1));
+      const a2 = alpha * (0.45 + 0.75 * spd);
+      g.strokeStyle = `rgba(${(90 + 50 * t) | 0},${(200 - 30 * t) | 0},252,${a2})`;
       g.stroke();
     }
     g.shadowBlur = 0;
@@ -1296,10 +1330,10 @@
 
   function drawObject() {
     // 掩码填充：画笔画的、图片掩码的固体都在这里显示出来
-    if (maskCv) {
-      ctx.imageSmoothingEnabled = false;
+    if (paintCv) {
+      ctx.imageSmoothingEnabled = true;
       ctx.globalAlpha = 1;
-      ctx.drawImage(maskCv, 0, 0, NX, NY);
+      ctx.drawImage(paintCv, 0, 0, NX, NY);
     }
     if (!srcImg || !objGeom) return;
     const k = RS;                       // 画布像素 / 网格单元
@@ -1320,7 +1354,7 @@
     ctx.restore();
 
     // 白色描边 + 辉光（参考 app 的观感：物体是"亮边黑体"，不是实心贴图）
-    if (outlineCv) {
+    if (outlineCv && outlineOn) {
       ctx.save();
       pixelSpace(ctx);
       ctx.globalCompositeOperation = 'lighter';
@@ -1581,9 +1615,10 @@
     const mid = mg.createImageData(NX, NY);
     const md = mid.data;
     for (let i = 0; i < NX * NY; i++) {
-      if (!solid[i]) continue;
+      // 只画"手画"的障碍物：图片本身看得见，再盖一层粗网格色块会显得很糊
+      if (!paint[i]) continue;
       const q = i * 4;
-      md[q] = 16; md[q + 1] = 20; md[q + 2] = 30; md[q + 3] = 235;
+      md[q] = 22; md[q + 1] = 26; md[q + 2] = 38; md[q + 3] = 210;
     }
     mg.putImageData(mid, 0, 0);
     maskCv = mc;
@@ -1746,6 +1781,8 @@
 
   let baseName = '';
   let overlayParticles = QS.get('part') !== '0';   // 场视图是否叠粒子
+  let outlineOn = QS.get('outline') === '1';        // 物体白边（导入照片时默认关）
+  let mcOff = false;                                // 性能降级：关掉 MacCormack
 
   // 参考 app 的三层独立开关：场(physics) / 烟(smoke) / 粒子(particles)
   const layers = { physics: 'none', smoke: false, particles: 'none' };
@@ -1930,7 +1967,9 @@
     if (!b) return;
     const t = b.dataset.t;
     if (t === 'clear') {
-      paint.fill(0); mergePaint();
+      paint.fill(0);
+      if (paintCtx) paintCtx.clearRect(0, 0, NX, NY);
+      mergePaint();
       $('meta').textContent = '已清空手画障碍物';
       return;
     }
@@ -1946,6 +1985,7 @@
   if ($('autoBg')) $('autoBg').onchange = () => { if (baseCanvas) reprocessImage(); };
   $('bright').oninput = (e) => { bright = +e.target.value; $('vBright').textContent = bright.toFixed(2); };
   $('hue').oninput = (e) => { smokeHue = +e.target.value; $('vHue').textContent = smokeHue; };
+  if ($('outlineOn')) $('outlineOn').onchange = (e) => { outlineOn = e.target.checked; };
 
   $('px').oninput = (e) => { objX = +e.target.value / 100; rebuildObject(); syncObjUI(); };
   $('py').oninput = (e) => { objY = +e.target.value / 100; rebuildObject(); syncObjUI(); };
@@ -2146,14 +2186,20 @@
       if (frameCnt < 90) return;
       const avg = frameAcc / frameCnt;
       frameAcc = 0; frameCnt = 0;
-      if (avg > 32) {                       // 平均低于 ~31fps 就降级
+      if (avg > 32 && !mcOff) {
+        // 第一步：先关误差补偿对流（省 2/3 的染料采样），画质影响最小
+        mcOff = true;
+        $('meta').textContent = `自动降级：${avg.toFixed(0)}ms/帧 → 关闭 MacCormack`;
+        return;
+      }
+      if (avg > 32) {                       // 还慢就降染料分辨率
         DS = 1;
         autoDropped = true;
         alloc();
         flowInited = false;
         rebuildObject();
         flowInited = true;
-        $('meta').textContent = `已自动降级：染料 ${avg.toFixed(0)}ms/帧偏慢 → 1× 分辨率`;
+        $('meta').textContent = `自动降级：仍 ${avg.toFixed(0)}ms/帧 → 染料 1×`;
       }
     }
     function loop(now) {
