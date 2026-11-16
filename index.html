@@ -189,13 +189,20 @@
   </div>
   <div class="group">
     <label>显示</label>
-    <div class="seg" id="mode">
-      <button data-m="stream" class="on">流线</button>
-      <button data-m="streak">脉线</button>
-      <button data-m="stripes">条纹烟</button>
-      <button data-m="curl">涡量</button>
-      <button data-m="speed">速度</button>
-      <button data-m="pressure">压强</button>
+    <div class="seg" id="segPhys">
+      <button data-k="none" class="on">场:关</button>
+      <button data-k="pressure">压强</button>
+      <button data-k="speed">速度</button>
+      <button data-k="curl">涡量</button>
+    </div>
+    <div class="seg" id="segSmoke">
+      <button data-k="0" class="on">烟:关</button>
+      <button data-k="1">条纹烟</button>
+    </div>
+    <div class="seg" id="segPart">
+      <button data-k="none" class="on">粒子:关</button>
+      <button data-k="stream">流线</button>
+      <button data-k="streak">脉线</button>
     </div>
   </div>
   <button id="btnReset">重置流场</button>
@@ -209,7 +216,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.2 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.3 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -295,6 +302,7 @@
   let fineMask = null;     // 染料级的固体掩码（高精度）
   let baseCanvas = null;   // 导入的原图副本（方便重新处理）
   let outlineCv = null;    // 物体轮廓（白色描边，参考 app 的做法）
+  let maskCv = null;       // 掩码填充层（把固体本身画出来，画笔才看得见）
 
   // 多重网格：粗层（2×2 合并）缓冲
   const MG = { ready: false, W: 0, H: 0, solid: null, p: null, div: null, res: null };
@@ -498,6 +506,7 @@
       }
     }
     mergePaint();
+    buildOutline(solidD);
     seedDye();
     if (!flowInited) { initFlow(); flowInited = true; }
     resetSmoke();   // 否则涂抹处会留下旧流线，看起来像重影
@@ -1089,12 +1098,18 @@
     const id = dyeCtx.createImageData(DX, DY);
     const d = id.data;
     for (let i = 0, n = DX * DY; i < n; i++) {
+      const x = i % DX, y = (i / DX) | 0;
       let r, g, b;
-      if (solidD[i]) { r = 26; g = 30; b = 42; }
+      if (solidD[i]) { r = 16; g = 20; b = 30; }
       else {
         const t = Math.max(0, Math.min(1, dye[i]));
-        // HSL → RGB：色相可调，明度随染料浓度上升
-        const hh = smokeHue / 360, ss = 0.42, ll = 0.08 + 0.74 * t;
+        // 双色烟：慢的地方偏冷色（smokeHue），快的地方偏暖色（+150°），
+        // 参考 app 里烟是青绿 + 橙红混着的
+        const cx = (x / DS) | 0, cy = (y / DS) | 0;
+        const ci = cy * NX + cx;
+        const sp = Math.min(1, Math.hypot(us[ci] || 0, vs[ci] || 0) / (U0 * speed * 1.3 || 1));
+        const hueNow = (smokeHue + 150 * sp * sp) % 360;
+        const hh = hueNow / 360, ss = 0.42 + 0.22 * sp, ll = 0.08 + 0.74 * t;
         const q = ll < 0.5 ? ll * (1 + ss) : ll + ss - ll * ss;
         const pp = 2 * ll - q;
         const hue2rgb = (t1, t2, t3) => {
@@ -1205,6 +1220,12 @@
    * 所以 1200×675 的图显示出来就是 1200 宽级别的清晰度。
    */
   function drawObject() {
+    // 掩码填充：画笔画的、图片掩码的固体都在这里显示出来
+    if (maskCv) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.globalAlpha = 1;
+      ctx.drawImage(maskCv, 0, 0, NX, NY);
+    }
     if (!srcImg || !objGeom) return;
     const k = RS;                       // 画布像素 / 网格单元
     ctx.save();
@@ -1236,39 +1257,47 @@
   }
 
   function render(fade) {
-    if (mode === 'stream') {
-      // 累积层：只淡出一部分，不清零 —— 多次叠加后就有烟的层次和柔边
-      smokeCtx.globalCompositeOperation = 'source-over';
-      // 拖动时把淡出加快（0.06 → 0.22）：既不留下明显重影，也不会把轨迹整片抹掉
-      smokeCtx.fillStyle = dragging ? 'rgba(5,7,13,0.22)' : 'rgba(5,7,13,0.06)';
-      smokeCtx.fillRect(0, 0, NX, NY);
-      smokeCtx.globalCompositeOperation = 'lighter';
-      drawStreamlines(smokeCtx, 0.13 * bright);
+    const phys = layers.physics, smokeOn = layers.smoke, part = layers.particles;
+    ctx.globalCompositeOperation = 'source-over';
 
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = '#05070d'; ctx.fillRect(0, 0, NX, NY);
-      ctx.drawImage(smokeCv, 0, 0, NX, NY);
-    } else if (mode === 'streak') {
-      // 和流线一样分层：粒子只往累积层里画，主画布每帧重铺背景 + 物体
-      smokeCtx.globalCompositeOperation = 'source-over';
-      smokeCtx.fillStyle = `rgba(5,7,13,${0.035})`;
-      smokeCtx.fillRect(0, 0, NX, NY);
-      smokeCtx.globalCompositeOperation = 'lighter';
-      drawParticles(smokeCtx, 0.25 * bright);
-
-      ctx.globalCompositeOperation = 'source-over';
+    // ① 底层：场 → 烟 → 纯背景
+    if (phys !== 'none') {
+      mode = phys;
+      drawField();
+    } else if (smokeOn) {
+      drawDye();
+    } else {
       ctx.fillStyle = '#05070d';
       ctx.fillRect(0, 0, NX, NY);
+    }
+
+    // ② 烟叠在场上面（半透明，能同时看到两层）
+    if (smokeOn && phys !== 'none') {
+      ctx.globalAlpha = 0.72;
+      drawDye();
+      ctx.globalAlpha = 1;
+    }
+
+    // ③ 累积层：流线 / 脉线
+    if (part === 'stream' || part === 'streak') {
+      smokeCtx.globalCompositeOperation = 'source-over';
+      smokeCtx.fillStyle = dragging ? 'rgba(5,7,13,0.22)'
+        : (part === 'stream' ? 'rgba(5,7,13,0.06)' : 'rgba(5,7,13,0.035)');
+      smokeCtx.fillRect(0, 0, NX, NY);
+      smokeCtx.globalCompositeOperation = 'lighter';
+      if (part === 'stream') drawStreamlines(smokeCtx, 0.13 * bright);
+      else drawParticles(smokeCtx, 0.25 * bright);
+      ctx.globalCompositeOperation = 'lighter';
       ctx.drawImage(smokeCv, 0, 0, NX, NY);
-    } else {
-      drawFieldMode();
-      // 场视图上叠加粒子：参考 app 的"Press./Speed/Curl + Particles"组合
-      if (mode !== 'stripes' && mode !== 'curl' && overlayParticles) {
+      ctx.globalCompositeOperation = 'source-over';
+    } else if (phys !== 'none') {
+      // 场视图叠粒子（参考 app 的组合效果）
+      if (overlayParticles) {
         ctx.globalCompositeOperation = 'lighter';
-        drawParticles(ctx, 0.35 * bright);
+        drawParticles(ctx, 0.32 * bright);
         ctx.globalCompositeOperation = 'source-over';
       }
-      if (mode === 'curl') {
+      if (phys === 'curl') {
         ctx.globalAlpha = 0.35;
         drawStreamlines(ctx, 0.5 * bright);
         ctx.globalAlpha = 1;
@@ -1453,6 +1482,20 @@
     }
     g.putImageData(id, 0, 0);
     outlineCv = c;
+
+    // 同时做一张"填充层"：固体格子填成深色半透明，画笔/图片掩码都能看见
+    const mc = document.createElement('canvas');
+    mc.width = NX; mc.height = NY;
+    const mg = mc.getContext('2d');
+    const mid = mg.createImageData(NX, NY);
+    const md = mid.data;
+    for (let i = 0; i < NX * NY; i++) {
+      if (!solid[i]) continue;
+      const q = i * 4;
+      md[q] = 16; md[q + 1] = 20; md[q + 2] = 30; md[q + 3] = 235;
+    }
+    mg.putImageData(mid, 0, 0);
+    maskCv = mc;
   }
 
   function solidDFromFine(fine) {
@@ -1613,6 +1656,16 @@
   let baseName = '';
   let overlayParticles = QS.get('part') !== '0';   // 场视图是否叠粒子
 
+  // 参考 app 的三层独立开关：场(physics) / 烟(smoke) / 粒子(particles)
+  const layers = { physics: 'none', smoke: false, particles: 'none' };
+  function layersFromMode(m) {
+    if (m === 'stream')      { layers.physics = 'none'; layers.smoke = false; layers.particles = 'stream'; }
+    else if (m === 'streak') { layers.physics = 'none'; layers.smoke = false; layers.particles = 'streak'; }
+    else if (m === 'stripes'){ layers.physics = 'none'; layers.smoke = true;  layers.particles = 'none'; }
+    else                     { layers.physics = m;      layers.smoke = false; layers.particles = 'none'; }
+  }
+  layersFromMode(mode);
+
   /** 从原图副本重新处理（换容差、开关去背景都走这里，不用重新选图） */
   function reprocessImage() {
     if (!baseCanvas) return;
@@ -1772,12 +1825,7 @@
   $('vort').oninput  = (e) => { vortF = +e.target.value; $('vVort').textContent = vortF.toFixed(0); };
   $('life').oninput  = (e) => { life = +e.target.value;  $('vLife').textContent = life.toFixed(1); };
   $('inj').oninput   = (e) => { inject = +e.target.value; $('vInject').textContent = inject; };
-  $('mode').onclick = (e) => {
-    const b = e.target.closest('button[data-m]');
-    if (!b) return;
-    mode = b.dataset.m;
-    [...$('mode').children].forEach(x => x.classList.toggle('on', x === b));
-  };
+  // 旧的单排模式按钮已被三排独立开关取代（见 segPhys / segSmoke / segPart）
   $('tool').onclick = (e) => {
     const b = e.target.closest('button[data-t]');
     if (!b) return;
@@ -1913,7 +1961,30 @@
   $('bright').value = bright; $('vBright').textContent = bright.toFixed(2);
   $('hue').value = smokeHue; $('vHue').textContent = smokeHue;
   $('vRes').textContent = NX + '×' + NY;
-  [...$('mode').children].forEach(b => b.classList.toggle('on', b.dataset.m === mode));
+  function syncLayerUI() {
+    [...$('segPhys').children].forEach(b => b.classList.toggle('on', b.dataset.k === layers.physics));
+    [...$('segSmoke').children].forEach(b => b.classList.toggle('on',
+      (b.dataset.k === '1') === layers.smoke));
+    [...$('segPart').children].forEach(b => b.classList.toggle('on', b.dataset.k === layers.particles));
+  }
+  $('segPhys').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    layers.physics = b.dataset.k;
+    if (layers.physics !== 'none') mode = layers.physics;
+    syncLayerUI(); resetSmoke();
+  };
+  $('segSmoke').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    layers.smoke = b.dataset.k === '1';
+    if (layers.smoke) seedDye();
+    syncLayerUI(); resetSmoke();
+  };
+  $('segPart').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    layers.particles = b.dataset.k;
+    syncLayerUI(); resetSmoke();
+  };
+  syncLayerUI();
   $('btnDemo').textContent = '内置形状：' + (SHAPE_NAMES)[SHAPE] + '（点击切换）';
   syncObjUI();
   $('res').value = NX + 'x' + NY;   // 让下拉框反映真实分辨率
