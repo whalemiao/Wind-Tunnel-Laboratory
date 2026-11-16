@@ -198,6 +198,7 @@
   <div class="group">
     <label class="chk"><input type="checkbox" id="outlineOn"> 物体白边</label>
     <label class="chk"><input type="checkbox" id="invertMask"> 反转（做管道/流道）</label>
+    <label class="chk"><input type="checkbox" id="wallMode"> 墙线模式（细线当墙，内部可流）</label>
     <label>烟色 <span class="val" id="vHue">190</span></label>
     <input type="range" id="hue" min="0" max="360" step="5" value="190">
     <label>亮度 <span class="val" id="vBright">0.70</span></label>
@@ -233,7 +234,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.7 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.8 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <div class="about-meta" id="aboutUpdated">最后更新：—</div>
 
@@ -1552,7 +1553,29 @@
     hg.restore();
 
     const hi = hg.getImageData(0, 0, MX, MY).data;
-    const coverAtRaw = (x, y) => hi[((y | 0) * MX + (x | 0)) * 4 + 3] / 255;
+    let coverAtRaw = (x, y) => hi[((y | 0) * MX + (x | 0)) * 4 + 3] / 255;
+
+    if (wallMode) {
+      // ① 二值化：只保留"画出来的线条"
+      const bin = new Uint8Array(MX * MY);
+      for (let i = 0; i < MX * MY; i++) bin[i] = hi[i * 4 + 3] > 80 ? 1 : 0;
+      // ② 膨胀 d 像素：细线在 320 网格下会被"整条漏掉"，必须先加粗
+      const d = Math.max(1, Math.round(MS * 1.2));
+      const dil = new Uint8Array(bin);
+      for (let y = 0; y < MY; y++) {
+        for (let x = 0; x < MX; x++) {
+          if (!bin[y * MX + x]) continue;
+          for (let dy = -d; dy <= d; dy++) {
+            const yy = y + dy; if (yy < 0 || yy >= MY) continue;
+            for (let dx = -d; dx <= d; dx++) {
+              const xx = x + dx; if (xx < 0 || xx >= MX) continue;
+              dil[yy * MX + xx] = 1;
+            }
+          }
+        }
+      }
+      coverAtRaw = (x, y) => dil[(y | 0) * MX + (x | 0)];
+    }
     // 反转模式：图片透明的部分才是"墙"，用来做管道/河道
     const coverAt = invertMask ? (x, y) => 1 - coverAtRaw(x, y) : coverAtRaw;
 
@@ -1635,7 +1658,8 @@
   /** 覆盖率 > 0.5 算固体；0.15~0.5 是"边缘格"，速度要被削弱而不是硬挡 */
   function updateSolidFromCov() {
     for (let i = 0, n = NX * NY; i < n; i++) {
-      solid[i] = (cov[i] > 0.6 || paint[i]) ? 1 : 0;
+      const solidThresh = wallMode ? 0.12 : 0.6;
+      solid[i] = (cov[i] > solidThresh || paint[i]) ? 1 : 0;
     }
     for (let y = 0; y < NY; y++) { solid[at(0, y)] = 0; solid[at(NX - 1, y)] = 0; }
     for (let x = 0; x < NX; x++) { solid[at(x, 0)] = 0; solid[at(x, NY - 1)] = 0; }
@@ -1787,6 +1811,7 @@
   let outlineOn = QS.get('outline') === '1';        // 物体白边（导入照片时默认关）
   let mcOff = false;                                // 性能降级：关掉 MacCormack
   let invertMask = QS.get('invert') === '1';        // 反转：透明处当实体（做流道）
+  let wallMode = QS.get('wall') === '1';            // 墙线模式：把细线加粗成墙，内部留空
 
   // 参考 app 的三层独立开关：场(physics) / 烟(smoke) / 粒子(particles)
   const layers = { physics: 'none', smoke: false, particles: 'none' };
@@ -1990,6 +2015,13 @@
   $('bright').oninput = (e) => { bright = +e.target.value; $('vBright').textContent = bright.toFixed(2); };
   $('hue').oninput = (e) => { smokeHue = +e.target.value; $('vHue').textContent = smokeHue; };
   if ($('outlineOn')) $('outlineOn').onchange = (e) => { outlineOn = e.target.checked; };
+  if ($('wallMode')) {
+    $('wallMode').checked = wallMode;
+    $('wallMode').onchange = (e) => {
+      wallMode = e.target.checked;
+      if (srcImg) rasterizeMask(objGeom.w, objGeom.h, false);
+    };
+  }
   if ($('invertMask')) {
     $('invertMask').checked = invertMask;
     $('invertMask').onchange = (e) => {
