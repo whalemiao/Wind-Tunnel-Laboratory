@@ -215,7 +215,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.12 · GPU 版 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.13 · GPU 版 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <a class="about-link" href="https://github.com/whalemiao/Wind-Tunnel-Laboratory" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -262,6 +262,7 @@
   // 开了它才能截到"主循环跑了几秒之后"的画面
   const gl = cv.getContext('webgl2', {
     alpha: false, antialias: false, depth: false,
+    powerPreference: 'high-performance',     // 别用省电档跑
     preserveDrawingBuffer: QS.get('keepbuffer') === '1'
   });
   if (!gl) fail('这个环境不支持 WebGL2');
@@ -1176,6 +1177,8 @@
   let arrowDirty = true;
   let cdNow = 0, clNow = 0;
   let gestureActive = false;       // 有手指/鼠标按在画布上（用来跳过同步读回）
+  const PERF = QS.get('perf') === '1';   // ?perf=1 在 HUD 显示每帧各阶段耗时
+  let perfStep = 0, perfRender = 0, perfTotal = 0;
   // 出口边界档位：0 硬吹 / 1 零梯度 / 2 零梯度 + 压力出口（默认，见 gpu/README 的实验记录）
   const OUTLET_IDS = { hard: 0, zero: 1, nrbc: 2 };
   let OUTLET = OUTLET_IDS[QS.get('outlet')];
@@ -1231,14 +1234,16 @@
     });
     [vA, vB] = [vB, vA];
 
-    // 2) 涡量约束
-    blit(vB, P.vorticity, (u) => {
-      bindTex(0, vA.tex, u.uVel);
-      bindTex(1, solid.tex, u.uSolid);
-      gl.uniform1f(u.curlAmount, CURL_AMT);
-      gl.uniform1f(u.dt, dt);
-    });
-    [vA, vB] = [vB, vA];
+    // 2) 涡量约束（强度为 0 就整段跳过，省一次全屏 pass）
+    if (CURL_AMT > 0) {
+      blit(vB, P.vorticity, (u) => {
+        bindTex(0, vA.tex, u.uVel);
+        bindTex(1, solid.tex, u.uSolid);
+        gl.uniform1f(u.curlAmount, CURL_AMT);
+        gl.uniform1f(u.dt, dt);
+      });
+      [vA, vB] = [vB, vA];
+    }
 
     // 3) 入口速度边界（带极轻微的上下摆动：完全对称的话物体后面永远不脱涡）
     blit(vB, P.inletVel, (u) => {
@@ -1276,23 +1281,26 @@
     });
     [vA, vB] = [vB, vA];
 
-    // 7) 染料对流（显式绑定当前速度 vA）
-    blit(dB, P.advectDye, (u) => {
-      bindTex(0, vA.tex, u.uVel);
-      bindTex(1, dA.tex, u.uDye);
-      bindTex(2, solid.tex, u.uSolid);
-      gl.uniform1f(u.dt, dt * SPEED);
-      gl.uniform1f(u.dissipation, DYE_DISS);
-    });
-    [dA, dB] = [dB, dA];
+    // 7-8) 染料：烟层关着就整段跳过（看不见的东西不用算）
+    if (SMOKE_ON) {
+      // 7) 染料对流（显式绑定当前速度 vA）
+      blit(dB, P.advectDye, (u) => {
+        bindTex(0, vA.tex, u.uVel);
+        bindTex(1, dA.tex, u.uDye);
+        bindTex(2, solid.tex, u.uSolid);
+        gl.uniform1f(u.dt, dt * SPEED);
+        gl.uniform1f(u.dissipation, DYE_DISS);
+      });
+      [dA, dB] = [dB, dA];
 
-    // 8) 入口注入
-    blit(dB, P.inlet, (u) => {
-      bindTex(0, dA.tex, u.uDye);
-      gl.uniform1f(u.time, time);
-      gl.uniform1f(u.uWide, QS.get('wide') === '1' ? 1.0 : 0.0);
-    });
-    [dA, dB] = [dB, dA];
+      // 8) 入口注入
+      blit(dB, P.inlet, (u) => {
+        bindTex(0, dA.tex, u.uDye);
+        gl.uniform1f(u.time, time);
+        gl.uniform1f(u.uWide, QS.get('wide') === '1' ? 1.0 : 0.0);
+      });
+      [dA, dB] = [dB, dA];
+    }
 
     // 9) 粒子推进（只在用到的时候跑：关掉粒子层就不花这个钱）
     if (PART_MODE === 'streak' || PART_MODE === 'random') {
@@ -1531,75 +1539,132 @@
              (vsF[i01] * (1 - fx) + vsF[i11] * fx) * fy;
   }
 
+  /* ---- 流线：双缓冲 + 分片构建（每帧只算 1/4 种子），杜绝周期性尖峰 ---- */
+  // 之前是每 0.15s 整体重建一次：120 条线 × 上千步 RK2 + 240 次 stroke，
+  // 手机上就是"每 150ms 卡一下"。现在拆到多帧，且描边按速度分 3 桶批量 stroke。
+  let streamCvB = null;            // 后台构建的那张（构建完整后跟 streamCv 交换）
+  let streamSeeds = null;
+  let streamSlice = 0, streamSliceN = 6, streamFirstPass = true;
+  let streamDrawn = 0, streamDrawnTotal = 0;
+  let streamStartT = 0;
+
+  function streamSeedsList() {
+    const rows = 30;
+    const out = [];
+    for (let s2 = 0; s2 < rows; s2++) out.push([3 / S, (2.5 + s2 * (SY - 5) / (rows - 1)) / SY]);
+    const stepX = Math.max(18, Math.round(S / 10)) / S;
+    const stepY = Math.max(12, Math.round(S / 9)) / S;
+    for (let y = stepY; y < (SY - 3) / SY; y += stepY) {
+      for (let x = stepX; x < (S - 3) / S; x += stepX) out.push([x, y]);
+    }
+    return out;
+  }
+
   function drawStreamlines() {
     if (overlayDirty) { syncOverlay(); overlayDirty = false; }
     if (!usF || time - velT > 0.4) { updateVelField(); velT = time; }
     if (!streamCv || streamCv.width !== ov.width || streamCv.height !== ov.height) {
       streamCv = document.createElement('canvas');
       streamCv.width = ov.width; streamCv.height = ov.height;
+      streamCvB = document.createElement('canvas');
+      streamCvB.width = ov.width; streamCvB.height = ov.height;
+      streamSeeds = null;
       streamT = -1;
     }
-    // 只在重建时才动覆盖层：每帧 clear+drawImage 一张 2K 画布也是白花的钱
-    if (time - streamT > 0.15) {
-      rebuildStreamlines();
+    if (!streamSeeds) streamSeeds = streamSeedsList();
+
+    // 还没开始新一轮：等一下再开工（保证节奏稳定）
+    if (streamSlice === 0 && streamT >= 0 && time - streamT < 0.10) return;
+    if (streamSlice === 0) {
+      // 新一轮：清空后台画布（前台那张继续显示旧的，不清 → 不会闪）
+      const bg = streamCvB.getContext('2d');
+      bg.setTransform(1, 0, 0, 1, 0, 0);
+      bg.clearRect(0, 0, streamCvB.width, streamCvB.height);
+      streamStartT = time;
+      // 第一轮一次性画完（不然刚打开要等 6 帧才有线）；之后按帧率切片：
+      // 帧率高就少切几片（刷新快），帧率低就多切（每帧负担小）
+      streamSliceN = streamFirstPass ? 1 : (fps > 45 ? 3 : (fps > 30 ? 4 : 6));
+    }
+    drawStreamlineSlice(streamSlice, streamSliceN);
+    streamSlice++;
+    if (streamSlice >= streamSliceN) {
+      streamDrawnTotal = streamDrawn; streamDrawn = 0;
+      streamFirstPass = false;
+      // 一轮画完：交换前后台，再贴到覆盖层
+      const tmp = streamCv; streamCv = streamCvB; streamCvB = tmp;
+      streamSlice = 0;
+      streamT = time;
       ovx.setTransform(1, 0, 0, 1, 0, 0);
       ovx.clearRect(0, 0, ov.width, ov.height);
       ovx.drawImage(streamCv, 0, 0);
-      streamT = time;
     }
   }
 
-  function rebuildStreamlines() {
-    const g = streamCv.getContext('2d');
-    const W = streamCv.width, H = streamCv.height;
+  /** 画第 i 片种子（原地内联 RK2 + 按速度分桶批量描边） */
+  function drawStreamlineSlice(i, n) {
+    const g = streamCvB.getContext('2d');
+    const W = streamCvB.width, H = streamCvB.height;
     g.setTransform(1, 0, 0, 1, 0, 0);
-    g.clearRect(0, 0, W, H);
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    g.lineWidth = Math.max(0.7, 0.9 * dpr);
+    const dpr = Math.min(1.5, window.devicePixelRatio || 1);
     g.lineJoin = 'round';
     g.lineCap = 'round';
 
-    // UV → 覆盖层像素（竖屏整体转 90°，和显示 pass 的 fuv 映射一致）
     const toPx = PORTRAIT
       ? (fx, fy) => [(1 - fy) * W, (1 - fx) * H]
       : (fx, fy) => [fx * W, fy * H];
 
-    const Hh = 0.55 / S;                              // 步长（UV）
+    const Hh = 0.55 / S;
     const MAXSTEP = Math.ceil(S * 1.8 / 0.55);
-    const seedsRows = 30;
-    const seeds = [];
-    for (let s = 0; s < seedsRows; s++) seeds.push([3 / S, (2.5 + s * (SY - 5) / (seedsRows - 1)) / SY]);
-    const stepX = Math.max(18, Math.round(S / 10)) / S;
-    const stepY = Math.max(12, Math.round(S / 9)) / S;
-    for (let y = stepY; y < (SY - 3) / SY; y += stepY) {
-      for (let x = stepX; x < (S - 3) / S; x += stepX) seeds.push([x, y]);
-    }
-
     const solidAt = (x, y) => {
       if (!solidBits) return false;
       const gx = Math.min(S - 1, Math.max(0, x * S | 0));
       const gy = Math.min(SY - 1, Math.max(0, y * SY | 0));
       return solidBits[gy * S + gx] !== 0;
     };
-
+    // 三条速度桶，各自一条路径，一次 stroke 画完
+    const paths = [new Path2D(), new Path2D(), new Path2D()];
     const speedRef = Math.max(1e-4, INFLOW * 1.2);
-    for (let si = 0; si < seeds.length; si++) {
-      let x = seeds[si][0], y = seeds[si][1];
+    const VWm1 = VW - 1;
+
+    const from = Math.floor(i * streamSeeds.length / n);
+    const to = Math.floor((i + 1) * streamSeeds.length / n);
+    for (let si = from; si < to; si++) {
+      let x = streamSeeds[si][0], y = streamSeeds[si][1];
       if (solidAt(x, y)) continue;
       const p0 = toPx(x, y);
-      g.beginPath();
-      g.moveTo(p0[0], p0[1]);
+      const path = new Path2D();          // 必须是新的：直接把 paths[0] 拿来用会变成 addPath(自己)
+      path.moveTo(p0[0], p0[1]);
       let lastDx = 1, lastDy = 0, drawn = 0, sp2 = 0;
       for (let k = 0; k < MAXSTEP; k++) {
-        sampleF(x, y, _s1);
-        const sp1 = Math.hypot(_s1[0], _s1[1]);
+        // ── 内联双线性采样（原来每次调用 sampleF 都要建数组，200k 次/轮太亏）──
+        let gx = x * VW - 0.5, gy = y * VW - 0.5;
+        let x0 = gx | 0, y0 = gy | 0;
+        if (x0 < 0) x0 = 0; if (x0 > VWm1) x0 = VWm1;
+        if (y0 < 0) y0 = 0; if (y0 > VWm1) y0 = VWm1;
+        const x1 = x0 < VWm1 ? x0 + 1 : x0, y1 = y0 < VWm1 ? y0 + 1 : y0;
+        const fx = gx - x0, fy = gy - y0;
+        const i00 = y0 * VW + x0, i10 = y0 * VW + x1, i01 = y1 * VW + x0, i11 = y1 * VW + x1;
+        const u1 = (usF[i00] * (1 - fx) + usF[i10] * fx) * (1 - fy) + (usF[i01] * (1 - fx) + usF[i11] * fx) * fy;
+        const v1 = (vsF[i00] * (1 - fx) + vsF[i10] * fx) * (1 - fy) + (vsF[i01] * (1 - fx) + vsF[i11] * fx) * fy;
+        const sp1 = Math.hypot(u1, v1);
         if (sp1 < 1e-4) break;
-        sampleF(x + (_s1[0] / sp1) * Hh * 0.5, y + (_s1[1] / sp1) * Hh * 0.5, _s2);
-        sp2 = Math.hypot(_s2[0], _s2[1]);
+
+        // 半步
+        const mx = x + (u1 / sp1) * Hh * 0.5, my = y + (v1 / sp1) * Hh * 0.5;
+        gx = mx * VW - 0.5; gy = my * VW - 0.5;
+        x0 = gx | 0; y0 = gy | 0;
+        if (x0 < 0) x0 = 0; if (x0 > VWm1) x0 = VWm1;
+        if (y0 < 0) y0 = 0; if (y0 > VWm1) y0 = VWm1;
+        const x1b = x0 < VWm1 ? x0 + 1 : x0, y1b = y0 < VWm1 ? y0 + 1 : y0;
+        const fxb = gx - x0, fyb = gy - y0;
+        const j00 = y0 * VW + x0, j10 = y0 * VW + x1b, j01 = y1b * VW + x0, j11 = y1b * VW + x1b;
+        const u2 = (usF[j00] * (1 - fxb) + usF[j10] * fxb) * (1 - fyb) + (usF[j01] * (1 - fxb) + usF[j11] * fxb) * fyb;
+        const v2 = (vsF[j00] * (1 - fxb) + vsF[j10] * fxb) * (1 - fyb) + (vsF[j01] * (1 - fxb) + vsF[j11] * fxb) * fyb;
+        sp2 = Math.hypot(u2, v2);
         if (sp2 < 1e-4) break;
-        let dx = (_s2[0] / sp2) * Hh, dy = (_s2[1] / sp2) * Hh;
+
+        let dx = (u2 / sp2) * Hh, dy = (v2 / sp2) * Hh;
         if (k > 0) {
-          // 限制每步转角：速度场再抖，线也不会拐出折角
           const maxTurn = 0.10;
           const a0 = Math.atan2(lastDy, lastDx), a1 = Math.atan2(dy, dx);
           let d = a1 - a0;
@@ -1612,21 +1677,23 @@
         lastDx = dx; lastDy = dy;
         x += dx; y += dy;
         if (x < 0 || x > 1 || y < 0 || y > 1) break;
-        if (solidAt(x, y)) break;                     // 撞到物体就停
-        const p = toPx(x, y);
-        g.lineTo(p[0], p[1]);
+        if (solidAt(x, y)) break;
+        const px = toPx(x, y);
+        path.lineTo(px[0], px[1]);
         drawn++;
       }
-      if (!drawn) continue;
-      const spd = Math.min(1, sp2 / speedRef);
-      const a2 = 0.62 * (0.55 + 0.6 * spd);
+      if (drawn) { streamDrawn++; paths[Math.min(2, (Math.min(1, sp2 / speedRef) * 3) | 0)].addPath(path); }
+    }
+
+    // 批量描边：3 桶 × 2 层 = 6 次 stroke（原来是每条约 2 次）
+    for (let b = 0; b < 3; b++) {
+      const a2 = 0.62 * (0.55 + 0.6 * (b + 1) / 3);
+      g.lineWidth = Math.max(0.7, 0.9 * dpr);
       g.strokeStyle = 'rgba(165,232,255,' + Math.min(1, a2).toFixed(3) + ')';
-      g.stroke();
-      // 再来一遍细的当"高光"，线看起来有厚度（CPU 版用双层描边模拟辉光）
+      g.stroke(paths[b]);
       g.lineWidth = Math.max(0.5, 0.45 * dpr);
       g.strokeStyle = 'rgba(230,250,255,' + Math.min(1, a2 * 0.55).toFixed(3) + ')';
-      g.stroke();
-      g.lineWidth = Math.max(0.7, 0.9 * dpr);
+      g.stroke(paths[b]);
     }
   }
 
@@ -1768,9 +1835,17 @@
     if (paintDemoPending) { paintDemoPending = false; paintDemo(); }
     flushStamps();
     if (maskDirty) { maskDirty = false; uploadMask(); }
+    const t0 = PERF ? performance.now() : 0;
     step(dt);
+    const t1 = PERF ? performance.now() : 0;
     render();
+    const t2 = PERF ? performance.now() : 0;
     updateForces();
+    if (PERF) {
+      perfStep = perfStep * 0.9 + (t1 - t0) * 0.1;
+      perfRender = perfRender * 0.9 + (t2 - t1) * 0.1;
+      perfTotal = perfTotal * 0.9 + (performance.now() - t0) * 0.1;
+    }
 
     if (QS.get('probe') && (time < 2 || Math.random() < 0.02)) probe();
 
@@ -1780,7 +1855,8 @@
       maybeDowngrade();
       hud.textContent = (hud.dataset.probe ? hud.dataset.probe + ' · ' : '') +
         `GPU ${S}×${SY} · ${fps.toFixed(0)} fps · 压力 ${PRESSURE_ITERS} 次` +
-        (hasMask ? ' · 有掩码' : '');
+        (hasMask ? ' · 有掩码' : '') +
+        (PERF ? ` · 物理 ${perfStep.toFixed(1)}ms 绘制 ${perfRender.toFixed(1)}ms 帧 ${perfTotal.toFixed(1)}ms` : '');
     }
     schedule();
   }
@@ -1991,7 +2067,7 @@
   bindSeg('segField', (k) => {
     FIELD_MODE = { none: 0, pressure: 1, speed: 2, curl: 3 }[k] || 0;
   });
-  bindSeg('segSmoke', (k) => { SMOKE_ON = k === '1' ? 1 : 0; });
+  bindSeg('segSmoke', (k) => { SMOKE_ON = k === '1' ? 1 : 0; if (SMOKE_ON) seedDye(); });
   bindSeg('segPart', (k) => {
     PART_MODE = ['stream', 'streak', 'random'].indexOf(k) >= 0 ? k : 'none';
     if (PART_MODE !== 'none') initParticles();
@@ -2264,7 +2340,7 @@
       PART_MODE = 'streak'; initParticles(); step(FIXED_DT);
       ok('粒子纹理可用', !!pa && PCOUNT > 0, 'PCOUNT=' + PCOUNT);
       PART_MODE = 'stream'; updateVelField();
-      ok('速度场读回（流线用）', !!usF && isFinite(usF[VW * VW / 2 | 0]), 'len=' + (usF ? usF.length : 0) + ' mid=' + (usF ? usF[VW * VW / 2 | 0] : 'null') + ' raw=' + (velRaw ? [velRaw[0],velRaw[1],velRaw[2],velRaw[3]].join(',') : 'null'));
+      ok('速度场读回（流线用）', !!usF && isFinite(usF[VW * VW / 2 | 0]), 'seeds=' + (streamSeeds ? streamSeeds.length : 0) + ' lines=' + streamDrawnTotal);
 
       for (let i = 0; i < 120; i++) step(FIXED_DT);
       updateForces();
