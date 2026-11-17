@@ -3,10 +3,13 @@ package io.github.whalemiao.windtunnel;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ClipData;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Environment;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.Base64;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.WindowManager;
@@ -14,12 +17,16 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebViewClient;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
@@ -99,6 +106,9 @@ public class MainActivity extends Activity {
                     }
                 }
             });
+            // 网页里 <a download> 在 WebView 里是无效的（没有下载管理器），
+            // 所以「保存这一帧」通过这个桥接交给 Java 写文件
+            web.addJavascriptInterface(new SaveBridge(), "AndroidBridge");
             web.setBackgroundColor(0xFF05070D);
 
             setContentView(web);
@@ -132,6 +142,55 @@ public class MainActivity extends Activity {
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    /** 网页 → 原生：把 PNG 的 base64 存进相册（API 29+）或应用私有目录（更老的系统） */
+    private class SaveBridge {
+        @JavascriptInterface
+        public boolean hasSave() { return true; }
+
+        @JavascriptInterface
+        public void savePng(final String base64, final String name) {
+            // 注意：JavascriptInterface 的方法跑在 WebView 的 JavaBridge 线程，不是 UI 线程
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    String msg;
+                    try {
+                        byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
+                        if (Build.VERSION.SDK_INT >= 29) {
+                            ContentValues cv = new ContentValues();
+                            cv.put("_display_name", name);
+                            cv.put("mime_type", "image/png");
+                            cv.put("relative_path", "Pictures/WindTunnel");
+                            Uri uri = getContentResolver()
+                                    .insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+                            if (uri == null) throw new RuntimeException("插入相册失败");
+                            OutputStream os = getContentResolver().openOutputStream(uri);
+                            os.write(bytes);
+                            os.close();
+                            msg = "已保存到相册：Pictures/WindTunnel/" + name;
+                        } else {
+                            File dir = new File(getExternalFilesDir(Environment.DIRECTORY_PICTURES), "WindTunnel");
+                            dir.mkdirs();
+                            File f = new File(dir, name);
+                            FileOutputStream fos = new FileOutputStream(f);
+                            fos.write(bytes);
+                            fos.close();
+                            msg = "已保存：" + f.getAbsolutePath();
+                        }
+                    } catch (Throwable e) {
+                        msg = "保存失败：" + e;
+                    }
+                    final String m = msg;
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            Toast.makeText(MainActivity.this, m, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            }).start();
+        }
     }
 
     private void showError(String title, Throwable e) {

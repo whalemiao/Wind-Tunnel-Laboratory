@@ -249,7 +249,8 @@
   const QS = new URLSearchParams(location.search);
   const SIM = parseInt(QS.get('sim') || '0', 10) ||      // 模拟分辨率（正方形网格）
     (window.innerWidth <= 820 ? 256 : 512);   // 窄屏=手机，默认降一档
-  let PRESSURE_ITERS = parseInt(QS.get('iters') || '24', 10);
+  let PRESSURE_ITERS = parseInt(QS.get('iters') || '0', 10) ||
+    (window.innerWidth <= 820 ? 16 : 24);   // 窄屏=手机，少迭代几次
   let VEL_DISS = parseFloat(QS.get('vdis') || '1');   // 默认不额外耗散（0.994 时 60 帧掉 30%，靠两端硬吹掩盖过）
   const DYE_DISS = parseFloat(QS.get('ddis') || '0.9995');
   let SPEED = parseFloat(QS.get('speed') || '1.0');
@@ -1174,6 +1175,7 @@
   let ARROWS = QS.get('arrows') === '1';       // 速度矢量箭头
   let arrowDirty = true;
   let cdNow = 0, clNow = 0;
+  let gestureActive = false;       // 有手指/鼠标按在画布上（用来跳过同步读回）
   // 出口边界档位：0 硬吹 / 1 零梯度 / 2 零梯度 + 压力出口（默认，见 gpu/README 的实验记录）
   const OUTLET_IDS = { hard: 0, zero: 1, nrbc: 2 };
   let OUTLET = OUTLET_IDS[QS.get('outlet')];
@@ -1630,8 +1632,10 @@
 
   /* ---------------- 气动力（尾流动量亏损法，和 CPU 版同一个公式） ---------------- */
   let maskBox = null;              // 物体包围盒（格坐标），uploadMask 时算好
+  let forceCol = null;             // 气动力读数缓冲（别每次 new）
   let forcesT = -1;
   function updateForces() {
+    if (gestureActive) return;       // 拖动/捏合时别插一次同步读回，会更卡
     if (time - forcesT < 0.4) return;
     forcesT = time;
     if (!maskBox) { cdNow = 0; clNow = 0; renderForces(); return; }
@@ -1641,18 +1645,21 @@
     // 换成压力出口后曾经算出负的 Cd
     const xw = Math.min(S - 3, Math.max(maskBox.minX + 2,
       maskBox.maxX + Math.round(H * 1.2)));
-    const col = new Float32Array(SY * 4);
+    if (!forceCol || forceCol.length !== SY * 4) forceCol = new Float32Array(SY * 4);
+    const col = forceCol;
     gl.bindFramebuffer(gl.FRAMEBUFFER, vA.fbo);
     gl.readPixels(xw, 0, 1, SY, gl.RGBA, gl.FLOAT, col);
+    // 参考来流用**同一列上下壁附近**的速度，而不是名义 inflow：
+    // 我们的域是封闭通道，物体一堵，整列都会加速（阻塞效应），拿名义来流算会得到负阻力
+    const Uref = Math.max(1e-4, 0.5 * (col[1 * 4] + col[(SY - 2) * 4]));
     let drag = 0, lift = 0;
     for (let y = 1; y < SY - 1; y++) {
       const uu = col[y * 4], vv = col[y * 4 + 1];
-      drag += uu * (U - uu);
+      drag += uu * (Uref - uu);
       lift += uu * vv;
     }
-    const ref = 0.5 * U * U * H;
-    // 被动物体的阻力不可能是负的；靠近物体时"绕流加速"会盖过尾流亏损，夹一下
-    cdNow = Math.max(0, drag / ref);
+    const ref = 0.5 * Uref * Uref * H;
+    cdNow = Math.max(0, drag / ref);   // 被动物体的阻力不可能是负的
     clNow = lift / ref;
     renderForces();
   }
@@ -1770,11 +1777,27 @@
     frames++; fpsT += dt;
     if (fpsT > 0.5) {
       fps = frames / fpsT; frames = 0; fpsT = 0;
+      maybeDowngrade();
       hud.textContent = (hud.dataset.probe ? hud.dataset.probe + ' · ' : '') +
         `GPU ${S}×${SY} · ${fps.toFixed(0)} fps · 压力 ${PRESSURE_ITERS} 次` +
         (hasMask ? ' · 有掩码' : '');
     }
     schedule();
+  }
+
+  // 自适应降级：手机/老设备跑不动 512 时自动降一档（用户手动选过分辨率就不动）
+  const RES_LADDER = [128, 192, 256, 384, 512, 768];
+  let lowFpsTicks = 0, userSetRes = false;
+  function maybeDowngrade() {
+    if (userSetRes || WARM > 0 || STILL) return;
+    if (fps < 42) lowFpsTicks++; else lowFpsTicks = 0;
+    if (lowFpsTicks < 4) return;            // 连续 ~2 秒掉帧才动手
+    let idx = 0;
+    for (let i = 0; i < RES_LADDER.length; i++) if (RES_LADDER[i] <= S) idx = i;
+    if (idx === 0) return;
+    lowFpsTicks = 0;
+    changeResolution(RES_LADDER[idx - 1]);
+    hud.textContent = '掉帧了，自动降到 宽 ' + S + '（可在「分辨率」里改回去）';
   }
 
   function schedule() {
@@ -1859,7 +1882,7 @@
     hud.dataset.probe = '';
     hud.textContent = `GPU ${S}×${SY} · 已换分辨率`;
   }
-  $('res').onchange = (e) => changeResolution(parseInt(e.target.value, 10));
+  $('res').onchange = (e) => { userSetRes = true; changeResolution(parseInt(e.target.value, 10)); };
   $('vSim').textContent = S;
 
   /* ---- 手画障碍物 ---- */
@@ -1940,6 +1963,7 @@
   };
   $('curl').oninput = (e) => { CURL_AMT = +e.target.value; $('vCurl').textContent = CURL_AMT; };
   $('iters').oninput = (e) => { PRESSURE_ITERS = +e.target.value; $('vIters').textContent = PRESSURE_ITERS; };
+  $('iters').value = PRESSURE_ITERS; $('vIters').textContent = PRESSURE_ITERS;
 
   /* ---- 三层显示开关 ---- */
   function bindSeg(id, onPick) {
@@ -2004,11 +2028,20 @@
     if (PART_MODE === 'stream' && ov.width) {
       g.drawImage(ov, 0, 0, out.width, out.height);
     }
+    const fname = 'wind-tunnel-' + S + '-' + Date.now() + '.png';
+    const bridge = window.AndroidBridge;
+    if (bridge && bridge.savePng) {
+      // Android WebView 里 <a download> 是无效的（没有下载管理器）→ 交给原生写相册
+      const dataUrl = out.toDataURL('image/png');
+      bridge.savePng(dataUrl.split(',')[1], fname);
+      hud.textContent = '已保存：' + fname;
+      return;
+    }
     out.toBlob((blob) => {
       if (!blob) return;
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'wind-tunnel-' + S + '-' + Date.now() + '.png';
+      a.download = fname;
       document.body.appendChild(a);
       a.click();
       setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
@@ -2052,6 +2085,7 @@
     if (e.cancelable) e.preventDefault();
     try { cv.setPointerCapture(e.pointerId); } catch (_) {}
     activePtr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    gestureActive = true;
 
     if (activePtr.size >= 2) { startPinch(); return; }
     if (pinch) return;
@@ -2102,6 +2136,7 @@
 
   function endPointer(e) {
     activePtr.delete(e.pointerId);
+    gestureActive = activePtr.size > 0;
     try { cv.releasePointerCapture(e.pointerId); } catch (_) {}
     if (pinch) {
       if (activePtr.size < 2) pinch = null;   // 松开一根手指就结束捏合
@@ -2129,6 +2164,7 @@
   cv.addEventListener('pointerup', endPointer);
   cv.addEventListener('pointercancel', (e) => {   // 被系统手势打断（来电、边缘返回）
     activePtr.delete(e.pointerId);
+    gestureActive = activePtr.size > 0;
     drag = null;
     if (activePtr.size < 2) pinch = null;
   });
