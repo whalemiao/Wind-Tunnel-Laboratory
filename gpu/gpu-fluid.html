@@ -216,7 +216,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.14 · GPU 版 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.15 · GPU 版 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <a class="about-link" href="https://github.com/whalemiao/Wind-Tunnel-Laboratory" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -1478,7 +1478,34 @@
    *   1. 不再读 S² 的整张纹理（512² = 4MB，读一次就掉帧），先 blit 到 160² 的 velSmall 再读（100KB）
    *   2. 平滑改成可分离的两趟一维盒滤波（O(n) 而不是 O(25n)）
    */
+  /* GPU timer (only where EXT_disjoint_timer_query_webgl2 exists) */
+  const extTimer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  let gpuQuery = null, gpuBusy = false, gpuMs = 0;
+  function gpuTimerBegin() {
+    if (!extTimer || gpuBusy) return;
+    gpuQuery = gl.createQuery();
+    gl.beginQuery(extTimer.TIME_ELAPSED_EXT, gpuQuery);
+  }
+  function gpuTimerEnd() {
+    if (!extTimer || gpuBusy || !gpuQuery) return;
+    gl.endQuery(extTimer.TIME_ELAPSED_EXT);
+    gpuBusy = true;
+  }
+  function gpuTimerPoll() {
+    if (!extTimer || !gpuBusy || !gpuQuery) return;
+    const avail = gl.getQueryParameter(gpuQuery, gl.QUERY_RESULT_AVAILABLE);
+    if (!avail) return;
+    if (!gl.getParameter(extTimer.GPU_DISJOINT_EXT)) {
+      gpuMs = gpuMs * 0.85 + (gl.getQueryParameter(gpuQuery, gl.QUERY_RESULT) / 1e6) * 0.15;
+    }
+    gl.deleteQuery(gpuQuery);
+    gpuQuery = null;
+    gpuBusy = false;
+  }
+
   function updateVelField() {
+    if (time - velT < 0.4) return;          // 0.4s 一次就够（流线不需要每帧更新）
+    velT = time;
     blit(velSmall, P.copySrc, (u) => bindTex(0, vA.tex, u.uSrc));
     const n = VW * VW;
     if (!velRaw || velRaw.length !== n * 4 || !usF || !tmpA) {
@@ -1488,6 +1515,11 @@
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, velSmall.fbo);
     gl.readPixels(0, 0, VW, VW, gl.RGBA, gl.FLOAT, velRaw);
+    applyVelField();
+  }
+
+  function applyVelField() {
+    const n = VW * VW;
 
     // 两趟可分离的一维盒滤波（半径 2）：横向 → 纵向
     const R = 2;
@@ -1563,7 +1595,7 @@
 
   function drawStreamlines() {
     if (overlayDirty) { syncOverlay(); overlayDirty = false; }
-    if (!usF || time - velT > 0.4) { updateVelField(); velT = time; }
+    if (!usF) return;                       // 帧开头那次读回还没跑过
     if (!streamCv || streamCv.width !== ov.width || streamCv.height !== ov.height) {
       streamCv = document.createElement('canvas');
       streamCv.width = ov.width; streamCv.height = ov.height;
@@ -1688,7 +1720,7 @@
 
     // 批量描边：3 桶 × 2 层 = 6 次 stroke（原来是每条约 2 次）
     for (let b = 0; b < 3; b++) {
-      const a2 = 0.62 * (0.55 + 0.6 * (b + 1) / 3);
+      const a2 = 0.80 * (0.62 + 0.38 * (b + 1) / 3);   // 去掉速度耗散后烟更亮，线也要更亮才看得见
       g.lineWidth = Math.max(0.7, 0.9 * dpr);
       g.strokeStyle = 'rgba(165,232,255,' + Math.min(1, a2).toFixed(3) + ')';
       g.stroke(paths[b]);
@@ -1714,9 +1746,14 @@
     const xw = Math.min(S - 3, Math.max(maskBox.minX + 2,
       maskBox.maxX + Math.round(H * 1.2)));
     if (!forceCol || forceCol.length !== SY * 4) forceCol = new Float32Array(SY * 4);
-    const col = forceCol;
     gl.bindFramebuffer(gl.FRAMEBUFFER, vA.fbo);
-    gl.readPixels(xw, 0, 1, SY, gl.RGBA, gl.FLOAT, col);
+    gl.readPixels(xw, 0, 1, SY, gl.RGBA, gl.FLOAT, forceCol);
+    applyForces();
+  }
+
+  function applyForces() {
+    const col = forceCol;
+    const H = Math.max(4, maskBox.maxY - maskBox.minY + 1);
     // 参考来流用**同一列上下壁附近**的速度，而不是名义 inflow：
     // 我们的域是封闭通道，物体一堵，整列都会加速（阻塞效应），拿名义来流算会得到负阻力
     const Uref = Math.max(1e-4, 0.5 * (col[1 * 4] + col[(SY - 2) * 4]));
@@ -1809,6 +1846,7 @@
       initParticles();
       seedDye();                  // 和 CPU 版一样：开局整场就是条纹
       if (WARM > 0) for (let i = 0; i < WARM; i++) step(FIXED_DT);
+      if (PART_MODE === 'stream') updateVelField();   // 先填一遍速度场，第一帧就有流线
       render();
       updateForces();
       if (!QS.get('probe')) hud.textContent = `GPU ${S}×${SY} · 压力 ${PRESSURE_ITERS} 次 · 拖动/画笔/滚轮`;
@@ -1834,14 +1872,20 @@
     last = now;
 
     if (paintDemoPending) { paintDemoPending = false; paintDemo(); }
+    // 读回放在帧开头：上一帧的 GPU 队列这时已经跑完，几乎不会 stall
+    // （放在帧尾就是等自己刚提交的那一帧 → 手机上每 0.4s 硬顿一下）
+    if (PART_MODE === 'stream' && !gestureActive) updateVelField();
+    updateForces();
     flushStamps();
     if (maskDirty) { maskDirty = false; uploadMask(); }
+    gpuTimerPoll();
+    gpuTimerBegin();
     const t0 = PERF ? performance.now() : 0;
     step(dt);
     const t1 = PERF ? performance.now() : 0;
     render();
     const t2 = PERF ? performance.now() : 0;
-    updateForces();
+    gpuTimerEnd();
     if (PERF) {
       perfStep = perfStep * 0.9 + (t1 - t0) * 0.1;
       perfRender = perfRender * 0.9 + (t2 - t1) * 0.1;
@@ -1857,7 +1901,8 @@
       hud.textContent = (hud.dataset.probe ? hud.dataset.probe + ' · ' : '') +
         `GPU ${S}×${SY} · ${fps.toFixed(0)} fps · 压力 ${PRESSURE_ITERS} 次` +
         (hasMask ? ' · 有掩码' : '') +
-        (PERF ? ` · 物理 ${perfStep.toFixed(1)}ms 绘制 ${perfRender.toFixed(1)}ms 帧 ${perfTotal.toFixed(1)}ms` : '');
+        (PERF ? ` · 物理 ${perfStep.toFixed(1)}ms 绘制 ${perfRender.toFixed(1)}ms 帧 ${perfTotal.toFixed(1)}ms` : '') +
+        (PERF && extTimer ? ` GPU ${gpuMs.toFixed(1)}ms` : '');
     }
     schedule();
   }
