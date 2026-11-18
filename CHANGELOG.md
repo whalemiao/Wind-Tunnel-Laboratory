@@ -2,6 +2,12 @@
 
 格式：`## 版本` + 分类条目。Release 说明由 CI 从对应版本段自动提取。
 
+## 0.3.17
+
+- **修：涡量/压强/随机模式下每 0.5s 硬顿（同步 readPixels 阻塞 GPU）**
+  - 原因：`sampleMaxima()` 在 `render()` 中间执行，涡量模式 150 次 `readPixels`、压强 50 次，阻塞 GPU 队列
+  - 修法：把 `sampleMaxima()` 挪到 `frame()` 开头，和 `updateVelField`/`updateForces` 一起，在上一帧 GPU 队列已跑完时做读回
+
 ## 0.3.16
 
 - **修：每 0.x 秒卡一次（周期性掉帧）**
