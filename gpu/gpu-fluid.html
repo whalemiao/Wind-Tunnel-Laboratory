@@ -216,7 +216,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.17 · GPU 版 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.18 · GPU 版 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <a class="about-link" href="https://github.com/whalemiao/Wind-Tunnel-Laboratory" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -1222,6 +1222,9 @@
   let last = performance.now();
   let time = 0;
   let frames = 0, fpsT = 0, fps = 0;
+  // 原始帧时间尖峰检测（?spikes=1 显示）
+  const SHOW_SPIKES = QS.get('spikes') === '1';
+  let frameTimes = [], maxFrameMs = 0, spikeT = 0;
 
   /** 推进一个物理步（dt 秒）。所有 pass 的读写变量都在这里显式给出 */
   function step(dt) {
@@ -1892,17 +1895,29 @@
       perfTotal = perfTotal * 0.9 + (performance.now() - t0) * 0.1;
     }
 
+    // 原始帧时间尖峰检测
+    if (SHOW_SPIKES) {
+      const frameMs = performance.now() - now;
+      frameTimes.push(frameMs);
+      if (frameTimes.length > 120) frameTimes.shift();
+      const maxNow = Math.max(...frameTimes);
+      if (maxNow > maxFrameMs) { maxFrameMs = maxNow; spikeT = time; }
+      if (time - spikeT > 3) { maxFrameMs = 0; spikeT = time; }
+    }
+
     if (QS.get('probe') && (time < 2 || Math.random() < 0.02)) probe();
 
     frames++; fpsT += dt;
     if (fpsT > 0.5) {
       fps = frames / fpsT; frames = 0; fpsT = 0;
       maybeDowngrade();
-      hud.textContent = (hud.dataset.probe ? hud.dataset.probe + ' · ' : '') +
+      let hudText = (hud.dataset.probe ? hud.dataset.probe + ' · ' : '') +
         `GPU ${S}×${SY} · ${fps.toFixed(0)} fps · 压力 ${PRESSURE_ITERS} 次` +
         (hasMask ? ' · 有掩码' : '') +
         (PERF ? ` · 物理 ${perfStep.toFixed(1)}ms 绘制 ${perfRender.toFixed(1)}ms 帧 ${perfTotal.toFixed(1)}ms` : '') +
         (PERF && extTimer ? ` GPU ${gpuMs.toFixed(1)}ms` : '');
+      if (SHOW_SPIKES) hudText += ` · 峰值 ${maxFrameMs.toFixed(1)}ms`;
+      hud.textContent = hudText;
     }
     schedule();
   }

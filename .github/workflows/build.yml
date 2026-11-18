@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: v0.3.17
+  RELEASE_TAG: v0.3.18
 
 jobs:
   apk:
