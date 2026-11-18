@@ -216,7 +216,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.18 · GPU 版 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.19 · GPU 版 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <a class="about-link" href="https://github.com/whalemiao/Wind-Tunnel-Laboratory" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -1587,11 +1587,16 @@
     const rows = 30;
     const out = [];
     for (let s2 = 0; s2 < rows; s2++) out.push([3 / S, (2.5 + s2 * (SY - 5) / (rows - 1)) / SY]);
-    const stepX = Math.max(18, Math.round(S / 10)) / S;
-    const stepY = Math.max(12, Math.round(S / 9)) / S;
+    // 种子间距不随分辨率线性增长（否则 768 时种子数爆炸）
+    // 固定物理距离：~20 网格单位 → S=256 时 step≈0.08，S=768 时 step≈0.027（同样物理密度）
+    const stepGrid = 20;              // 固定网格间距
+    const stepX = stepGrid / S;
+    const stepY = stepGrid / SY;
     for (let y = stepY; y < (SY - 3) / SY; y += stepY) {
       for (let x = stepX; x < (S - 3) / S; x += stepX) out.push([x, y]);
     }
+    // 硬上限：最多 200 条流线（够密，再多肉眼也分不清）
+    if (out.length > 200) out.length = 200;
     return out;
   }
 
@@ -1649,7 +1654,9 @@
       : (fx, fy) => [fx * W, fy * H];
 
     const Hh = 0.55 / S;
-    const MAXSTEP = Math.ceil(S * 1.8 / 0.55);
+    // 最大步数按物理距离算：对流穿越整个域最多 ~S/Hh 步
+    // 但硬上限 800 步（足够穿越 768 域），防止高分辨率下步数爆炸
+    const MAXSTEP = Math.min(800, Math.ceil(S * 1.8 / 0.55));
     const solidAt = (x, y) => {
       if (!solidBits) return false;
       const gx = Math.min(S - 1, Math.max(0, x * S | 0));
