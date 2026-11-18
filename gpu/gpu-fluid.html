@@ -216,7 +216,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.19 · GPU 版 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.20 · GPU 版 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <a class="about-link" href="https://github.com/whalemiao/Wind-Tunnel-Laboratory" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -1401,9 +1401,14 @@
       gl.uniform1f(u.uBright, BRIGHT);
       gl.uniform3f(u.uSmokeColor, smokeRGB[0], smokeRGB[1], smokeRGB[2]);
     });
-    if (PART_MODE === 'streak' || PART_MODE === 'random') drawParticles();
-    else if (PART_MODE === 'stream') drawStreamlines();
-    else clearOverlay();
+    if (PART_MODE === 'streak' || PART_MODE === 'random') {
+      drawParticles();
+      // 流线模式不在这里清主 overlay，流线有自己的 overlay
+    } else if (PART_MODE === 'stream') {
+      drawStreamlines();
+    } else {
+      clearOverlay();
+    }
     if (ARROWS) drawArrows();
   }
 
@@ -1472,6 +1477,32 @@
     ov.style.top = r.top + 'px';
     ov.style.width = r.width + 'px';
     ov.style.height = r.height + 'px';
+  }
+
+  // 流线专用覆盖层（固定 1.0 DPR，避免高分屏全屏 drawImage 开销）
+  const ovStream = document.createElement('canvas');
+  ovStream.style.position = 'fixed';
+  ovStream.style.left = '0';
+  ovStream.style.top = '0';
+  ovStream.style.pointerEvents = 'none';
+  ovStream.style.zIndex = '5';
+  document.body.appendChild(ovStream);
+  const ovStreamX = ovStream.getContext('2d');
+  let streamOverlayDirty = true;
+
+  function syncStreamOverlay() {
+    const r = cv.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width));    // 1.0 DPR
+    const h = Math.max(1, Math.round(r.height));
+    if (ovStream.width !== w || ovStream.height !== h) {
+      ovStream.width = w; ovStream.height = h;
+      streamCv = null;  // 强制下一帧重建流线缓存
+      streamT = -1;
+    }
+    ovStream.style.left = r.left + 'px';
+    ovStream.style.top = r.top + 'px';
+    ovStream.style.width = r.width + 'px';
+    ovStream.style.height = r.height + 'px';
   }
 
   /**
@@ -1601,13 +1632,13 @@
   }
 
   function drawStreamlines() {
-    if (overlayDirty) { syncOverlay(); overlayDirty = false; }
+    if (streamOverlayDirty) { syncStreamOverlay(); streamOverlayDirty = false; }
     if (!usF) return;                       // 帧开头那次读回还没跑过
-    if (!streamCv || streamCv.width !== ov.width || streamCv.height !== ov.height) {
+    if (!streamCv || streamCv.width !== ovStream.width || streamCv.height !== ovStream.height) {
       streamCv = document.createElement('canvas');
-      streamCv.width = ov.width; streamCv.height = ov.height;
+      streamCv.width = ovStream.width; streamCv.height = ovStream.height;
       streamCvB = document.createElement('canvas');
-      streamCvB.width = ov.width; streamCvB.height = ov.height;
+      streamCvB.width = ovStream.width; streamCvB.height = ovStream.height;
       streamSeeds = null;
       streamT = -1;
     }
@@ -1630,13 +1661,13 @@
     if (streamSlice >= streamSliceN) {
       streamDrawnTotal = streamDrawn; streamDrawn = 0;
       streamFirstPass = false;
-      // 一轮画完：直接交换 canvas 引用（零拷贝），并立即贴到 overlay
+      // 一轮画完：直接交换 canvas 引用（零拷贝），并立即贴到 stream overlay
       const tmp = streamCv; streamCv = streamCvB; streamCvB = tmp;
       streamSlice = 0;
       streamT = time;
-      ovx.setTransform(1, 0, 0, 1, 0, 0);
-      ovx.clearRect(0, 0, ov.width, ov.height);
-      ovx.drawImage(streamCv, 0, 0);
+      ovStreamX.setTransform(1, 0, 0, 1, 0, 0);
+      ovStreamX.clearRect(0, 0, ovStream.width, ovStream.height);
+      ovStreamX.drawImage(streamCv, 0, 0);
     }
   }
 
@@ -1645,7 +1676,6 @@
     const g = streamCvB.getContext('2d');
     const W = streamCvB.width, H = streamCvB.height;
     g.setTransform(1, 0, 0, 1, 0, 0);
-    const dpr = Math.min(1.5, window.devicePixelRatio || 1);
     g.lineJoin = 'round';
     g.lineCap = 'round';
 
@@ -1960,7 +1990,8 @@
   $('btnPanel').onclick = () => {
     document.body.classList.toggle('collapsed');
     overlayDirty = true;                       // 画布左边距变了，覆盖层要重新对齐
-    setTimeout(() => { overlayDirty = true; }, 260);   // 等 CSS 过渡跑完
+    streamOverlayDirty = true;                 // 流线 overlay 也要重新对齐
+    setTimeout(() => { overlayDirty = true; streamOverlayDirty = true; }, 260);   // 等 CSS 过渡跑完
   };
 
   // 窄屏默认收起侧栏（抽屉），否则手机上 220px 的侧栏会吃掉一半画布
@@ -2346,6 +2377,7 @@
       if (p !== PORTRAIT) { PORTRAIT = p; flipped = true; }
     }
     overlayDirty = true;
+    streamOverlayDirty = true;   // 流线 overlay 也要重新对齐
     clearOverlay();
     // 场高跟着比例走：差得多才重建（否则拖一下窗口就把流场重置了）
     const wantSY = computeSY(S);
