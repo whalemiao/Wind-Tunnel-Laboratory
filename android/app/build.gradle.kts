@@ -10,8 +10,8 @@ android {
         applicationId = "io.github.whalemiao.windtunnel"
         minSdk = 24
         targetSdk = 34
-        versionCode = 35
-        versionName = "0.3.23"
+        versionCode = 36
+        versionName = "0.3.24"
     }
 
     // debug 版用自动生成的调试密钥签名，能直接装（不需要自己配 keystore）
