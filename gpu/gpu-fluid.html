@@ -216,7 +216,7 @@
 
   <div class="group">
     <label>关于</label>
-    <div class="about-meta">风洞实验室 v0.3.21 · GPU 版 · MIT 许可</div>
+    <div class="about-meta">风洞实验室 v0.3.22 · GPU 版 · MIT 许可</div>
     <div class="about-meta">作者：whalemiao</div>
     <a class="about-link" href="https://github.com/whalemiao/Wind-Tunnel-Laboratory" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -1340,7 +1340,7 @@
     if (FIELD_MODE === 0 && !ARROWS) return;
     const needCurl = FIELD_MODE === 3;
     const needP = FIELD_MODE === 1;
-    if (scaleTime >= 0 && time - scaleTime < 0.5) return;
+    if (scaleTime >= 0 && time - scaleTime < 0.5 + Math.random() * 0.2) return;  // 0.5–0.7s 抖动
     scaleTime = time;
     let pm = 0, vm = 0, cm = 0;
     const N = 4;                                   // 5×5 = 25 个点，够用且便宜（原来是 121 点）
@@ -1537,7 +1537,7 @@
   }
 
   function updateVelField() {
-    if (time - velT < 0.8) return;          // 0.8s 一次（原 0.4s），减少同步 readPixels 频率
+    if (time - velT < 0.8 + Math.random() * 0.3) return;  // 0.8–1.1s 抖动间隔，打破固定相位
     velT = time;
     blit(velSmall, P.copySrc, (u) => bindTex(0, vA.tex, u.uSrc));
     const n = VW * VW;
@@ -1775,7 +1775,7 @@
   let forcesT = -1;
   function updateForces() {
     if (gestureActive) return;       // 拖动/捏合时别插一次同步读回，会更卡
-    if (time - forcesT < 0.8) return;  // 同步读回间隔加倍
+    if (time - forcesT < 0.8 + Math.random() * 0.3) return;  // 0.8–1.1s 抖动间隔，打破固定相位
     forcesT = time;
     if (!maskBox) { cdNow = 0; clNow = 0; renderForces(); return; }
     const U = INFLOW;
@@ -1908,8 +1908,8 @@
 
   function frame(now) {
     // 微小时间抖动：打破 GPU 队列与 readPixels 的固定相位（物体静止时的周期性卡顿）
-    // 每帧 ±0.3 ms 随机偏移，拖拽时 gestureActive=true 不抖动（保持手感）
-    if (!gestureActive) now += (Math.random() - 0.5) * 0.0006;
+    // 静止时每帧 ±2 ms 随机偏移，拖拽时 gestureActive=true 不抖动（保持手感）
+    if (!gestureActive) now += (Math.random() - 0.5) * 0.004;
 
     const dt = Math.min(0.033, (now - last) / 1000);
     last = now;
