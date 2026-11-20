@@ -1249,12 +1249,21 @@
       [vA, vB] = [vB, vA];
     }
 
-    // 3) 入口速度边界（完全对称，无扰流）：物体可自然脱离涡流
-    blit(vB, P.inletVel, (u) => {
-      bindTex(0, vA.tex, u.uVel);
-      gl.uniform1f(u.inflow, INFLOW);
-      // gl.uniform1f(u.wobble, 0.0);  // 无扰流，完全对称但可自然脱离
-    });
+    // 3) 入口速度边界（无持续扰流，仅初始化给一次微小随机扰动触发涡脱落）
+    if (time < 0.02) {  // 仅第一帧给一次微小扰动，模拟制造/表面不完美
+      const initWob = (Math.random() - 0.5) * 0.002 * INFLOW;  // 0.2% 随机扰动
+      blit(vB, P.inletVel, (u) => {
+        bindTex(0, vA.tex, u.uVel);
+        gl.uniform1f(u.inflow, INFLOW);
+        gl.uniform1f(u.wobble, initWob);
+      });
+    } else {
+      blit(vB, P.inletVel, (u) => {
+        bindTex(0, vA.tex, u.uVel);
+        gl.uniform1f(u.inflow, INFLOW);
+        gl.uniform1f(u.wobble, 0.0);  // 之后完全对称，无扰流
+      });
+    }
     [vA, vB] = [vB, vA];
 
     // 4) 散度
