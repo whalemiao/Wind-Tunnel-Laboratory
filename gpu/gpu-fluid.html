@@ -129,6 +129,7 @@
       <button data-t="eraser">橡皮</button>
     </div>
     <button id="btnClearPaint">清空手画</button>
+    <button id="btnManualMask" class="primary" style="margin-top:6px">手动抠图</button>
   </div>
   <div class="group">
     <label>笔刷半径 <span class="val" id="vBrush">4</span></label>
@@ -253,7 +254,7 @@
   let PRESSURE_ITERS = parseInt(QS.get('iters') || '0', 10) ||
     (window.innerWidth <= 820 ? 16 : 24);   // 窄屏=手机，少迭代几次
   let VEL_DISS = parseFloat(QS.get('vdis') || '1');   // 默认不额外耗散（0.994 时 60 帧掉 30%，靠两端硬吹掩盖过）
-  const DYE_DISS = parseFloat(QS.get('ddis') || '0.9995');
+  let DYE_DISS = parseFloat(QS.get('ddis') || '0.9995');
   let SPEED = parseFloat(QS.get('speed') || '1.0');
   let CURL_AMT = parseFloat(QS.get('curl') || '28');
   let INFLOW = parseFloat(QS.get('inflow') || '0.35');
@@ -2091,7 +2092,313 @@
     uploadMask();
     seedDye();
   };
+  $('btnManualMask').onclick = () => {
+    if (!maskImg) { hud.textContent = '请先导入图片'; return; }
+    openManualMattingWindow();
+  };
   $('brush').oninput = (e) => { brush = +e.target.value; $('vBrush').textContent = brush; };
+
+  /** 打开手动抠图窗口 */
+  let mattingWin = null;
+  let mattingCanvas = null, mattingCtx = null;
+  let mattingImg = null;
+  let mattingMask = null;  // Uint8Array (0/255)
+  let mattingTool = "brush";  // brush | eraser
+  let mattingBrushSize = 16;
+  let mattingScale = 1;
+  let mattingPan = { x: 0, y: 0 };
+
+  function openManualMattingWindow() {
+    if (mattingWin && !mattingWin.closed) {
+      mattingWin.focus();
+      return;
+    }
+    if (!maskImg) { hud.textContent = "请先导入图片"; return; }
+    mattingImg = new Image();
+    if (maskImg instanceof HTMLCanvasElement) {
+      mattingImg.src = maskImg.toDataURL();
+    } else {
+      mattingImg.src = maskImg.src;
+    }
+    mattingImg.onload = () => {
+      mattingMask = new Uint8Array(mattingImg.width * mattingImg.height);
+      mattingMask.fill(255);
+      console.log("Image loaded:", mattingImg.width, "x", mattingImg.height);
+      const maxW = Math.min(window.innerWidth * 0.7, 800);
+      const maxH = window.innerHeight * 0.8;
+      mattingScale = Math.min(1, maxW / mattingImg.width, maxH / mattingImg.height);
+      mattingPan = { x: 0, y: 0 };
+      const w = Math.min(900, Math.round(mattingImg.width * mattingScale) + 40);
+      const h = Math.round((mattingImg.height / mattingImg.width) * w) + 120;
+      mattingWin = window.open("", "ManualMatting", "width=" + w + ",height=" + h + ",resizable=yes,scrollbars=no,status=no");
+      if (!mattingWin) {
+        hud.textContent = "请允许弹窗以使用手动抠图";
+        return;
+      }
+      mattingWin.document.title = "手动抠图 - 绿色=保留，红色=删除";
+      mattingWin.document.body.style.margin = "0";
+      mattingWin.document.body.style.background = "#1a1a2e";
+      mattingWin.document.body.style.fontFamily = "system-ui, sans-serif";
+      const brushVal = mattingBrushSize;
+      var html = "";
+      html += "<style>";
+      html += "  * { box-sizing: border-box; user-select: none; }";
+      html += "  .toolbar {";
+      html += "    position: sticky; top: 0; z-index: 10;";
+      html += "    display: flex; gap: 8px; padding: 8px 12px;";
+      html += "    background: #232342; border-bottom: 1px solid #333;";
+      html += "    flex-wrap: wrap; align-items: center;";
+      html += "  }";
+      html += "  .toolbar button {";
+      html += "    padding: 6px 12px; border-radius: 6px; border: 1px solid #444;";
+      html += "    background: #2d2d50; color: #e0e0f0; cursor: pointer; font: inherit;";
+      html += "    transition: background 0.1s;";
+      html += "  }";
+      html += "  .toolbar button:hover { background: #3a3a6a; }";
+      html += "  .toolbar button.active { background: #0e7490; border-color: #0e7490; color: #e6feff; }";
+      html += "  .toolbar input[type=range] { accent-color: #2dd4bf; width: 120px; }";
+      html += "  .toolbar .sep { width: 1px; background: #444; margin: 0 8px; height: 24px; }";
+      html += "  .toolbar label { color: #a0a0c0; font-size: 12px; }";
+      html += "  #mattingCanvas { display: block; cursor: crosshair; touch-action: none; }";
+      html += "  .hint { padding: 8px 12px; color: #888; font-size: 12px; background: #161630; border-top: 1px solid #333; }";
+      html += "</style>";
+      html += "<div class=\"toolbar\">";
+      html += "  <button id=\"toolBrush\" class=\"active\" title=\"画笔：保留区域（绿色）\">🖌️ 画笔</button>";
+      html += "  <button id=\"toolEraser\" title=\"橡皮：删除区域（红色）\">🧽 橡皮</button>";
+      html += "  <div class=\"sep\"></div>";
+      html += "  <label>笔刷: <span id=\"brushVal\">" + brushVal + "</span>px</label>";
+      html += "  <input type=\"range\" id=\"brushSize\" min=\"2\" max=\"80\" step=\"1\" value=\"" + brushVal + "\">";
+      html += "  <div class=\"sep\"></div>";
+      html += "  <button id=\"btnUndo\" title=\"撤销\">↩️ 撤销</button>";
+      html += "  <button id=\"btnRedo\" title=\"重做\">↪️ 重做</button>";
+      html += "  <div class=\"sep\"></div>";
+      html += "  <button id=\"btnInvert\" title=\"反选\">⇄ 反选</button>";
+      html += "  <button id=\"btnFill\" title=\"填充背景\">🪣 填充</button>";
+      html += "  <div class=\"sep\"></div>";
+      html += "  <button id=\"btnApply\" class=\"primary\" style=\"background:#2563eb;border-color:#2563eb;margin-left:auto\" title=\"应用并关闭\">✅ 应用到主窗口</button>";
+      html += "  <button id=\"btnCancel\" style=\"margin-left:8px\" title=\"取消\">❌ 取消</button>";
+      html += "</div>";
+      html += "<canvas id=\"mattingCanvas\"></canvas>";
+      html += "<div class=\"hint\">";
+      html += "  左键/拖动：绘制 · 滚轮：缩放 · 右键/空格+拖动：平移 · 按住 Shift 临时切换工具";
+      html += "</div>";
+      mattingWin.document.body.innerHTML = html;
+      mattingCanvas = mattingWin.document.getElementById("mattingCanvas");
+      mattingCanvas.width = mattingImg.width;
+      mattingCanvas.height = mattingImg.height;
+      mattingCtx = mattingCanvas.getContext("2d", { willReadFrequently: true });
+      const undoStack = [];
+      const redoStack = [];
+      function pushUndo() {
+        undoStack.push(new Uint8Array(mattingMask));
+        if (undoStack.length > 20) undoStack.shift();
+        redoStack.length = 0;
+      }
+      function applyMaskToCanvas() {
+        mattingCtx.clearRect(0, 0, mattingCanvas.width, mattingCanvas.height);
+        mattingCtx.drawImage(mattingImg, 0, 0);
+        const imgData = mattingCtx.getImageData(0, 0, mattingImg.width, mattingImg.height);
+        const srcData = imgData.data;
+        for (let i = 0; i < mattingMask.length; i++) {
+          srcData[i * 4 + 3] = mattingMask[i];
+        }
+        mattingCtx.putImageData(imgData, 0, 0);
+        mattingCtx.globalAlpha = 0.35;
+        const preview = mattingCtx.createImageData(mattingImg.width, mattingImg.height);
+        for (let i = 0; i < mattingMask.length; i++) {
+          const a = mattingMask[i];
+          if (a === 255) {
+            preview.data[i * 4] = 0; preview.data[i * 4 + 1] = 255; preview.data[i * 4 + 2] = 0; preview.data[i * 4 + 3] = 255;
+          } else if (a === 0) {
+            preview.data[i * 4] = 255; preview.data[i * 4 + 1] = 0; preview.data[i * 4 + 2] = 0; preview.data[i * 4 + 3] = 255;
+          } else {
+            preview.data[i * 4] = 0; preview.data[i * 4 + 1] = 0; preview.data[i * 4 + 2] = 0; preview.data[i * 4 + 3] = 0;
+          }
+        }
+        mattingCtx.putImageData(preview, 0, 0);
+        mattingCtx.globalAlpha = 1.0;
+      }
+      function getCanvasPos(clientX, clientY) {
+        const rect = mattingCanvas.getBoundingClientRect();
+        const mouseX = clientX - rect.left;
+        const mouseY = clientY - rect.top;
+        return {
+          x: Math.floor((mouseX / mattingScale - mattingPan.x)),
+          y: Math.floor((mouseY / mattingScale - mattingPan.y))
+        };
+      }
+      function drawAt(x, y, isEraser) {
+        const r = Math.max(1, Math.round(mattingBrushSize / mattingScale));
+        const val = isEraser ? 0 : 255;
+        for (let dy = -r; dy <= r; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= mattingImg.height) continue;
+          const dxLimit = Math.floor(Math.sqrt(r * r - dy * dy));
+          const base = yy * mattingImg.width;
+          for (let dx = -dxLimit; dx <= dxLimit; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= mattingImg.width) continue;
+            mattingMask[base + xx] = val;
+          }
+        }
+      }
+      applyMaskToCanvas();
+      const winDoc = mattingWin.document;
+      winDoc.getElementById("toolBrush").onclick = () => {
+        mattingTool = "brush";
+        winDoc.getElementById("toolBrush").classList.add("active");
+        winDoc.getElementById("toolEraser").classList.remove("active");
+      };
+      winDoc.getElementById("toolEraser").onclick = () => {
+        mattingTool = "eraser";
+        winDoc.getElementById("toolEraser").classList.add("active");
+        winDoc.getElementById("toolBrush").classList.remove("active");
+      };
+      winDoc.getElementById("brushSize").oninput = (e) => {
+        mattingBrushSize = +e.target.value;
+        winDoc.getElementById("brushVal").textContent = mattingBrushSize;
+      };
+      winDoc.getElementById("btnUndo").onclick = () => {
+        if (undoStack.length) {
+          redoStack.push(new Uint8Array(mattingMask));
+          mattingMask = undoStack.pop();
+          applyMaskToCanvas();
+        }
+      };
+      winDoc.getElementById("btnRedo").onclick = () => {
+        if (redoStack.length) {
+          undoStack.push(new Uint8Array(mattingMask));
+          mattingMask = redoStack.pop();
+          applyMaskToCanvas();
+        }
+      };
+      winDoc.getElementById("btnInvert").onclick = () => {
+        pushUndo();
+        for (let i = 0; i < mattingMask.length; i++) {
+          mattingMask[i] = mattingMask[i] === 255 ? 0 : 255;
+        }
+        applyMaskToCanvas();
+      };
+      winDoc.getElementById("btnFill").onclick = () => {
+        pushUndo();
+        const W = mattingImg.width, H = mattingImg.height;
+        const srcData = mattingCtx.getImageData(0, 0, W, H).data;
+        const tol = 30 * 30;
+        const bg = [srcData[0], srcData[1], srcData[2]];
+        const seen = new Uint8Array(W * H);
+        const stack = [];
+        for (let x = 0; x < W; x++) { stack.push(x); stack.push((H - 1) * W + x); }
+        for (let y = 0; y < H; y++) { stack.push(y * W); stack.push(y * W + W - 1); }
+        while (stack.length) {
+          const idx = stack.pop();
+          if (seen[idx]) continue;
+          seen[idx] = 1;
+          const q = idx * 4;
+          const dr = srcData[q] - bg[0], dg = srcData[q + 1] - bg[1], db = srcData[q + 2] - bg[2];
+          if (dr * dr + dg * dg + db * db < tol) {
+            mattingMask[idx] = 0;
+            const x = idx % W, y = (idx / W) | 0;
+            if (x > 0) stack.push(idx - 1);
+            if (x < W - 1) stack.push(idx + 1);
+            if (y > 0) stack.push(idx - W);
+            if (y < H - 1) stack.push(idx + W);
+          }
+        }
+        applyMaskToCanvas();
+      };
+      winDoc.getElementById("btnApply").onclick = () => {
+        const outCanvas = document.createElement("canvas");
+        outCanvas.width = mattingImg.width;
+        outCanvas.height = mattingImg.height;
+        const outCtx = outCanvas.getContext("2d");
+        const srcData = mattingCtx.getImageData(0, 0, mattingImg.width, mattingImg.height).data;
+        const outData = outCtx.createImageData(mattingImg.width, mattingImg.height);
+        for (let i = 0; i < mattingMask.length; i++) {
+          outData.data[i * 4] = srcData[i * 4];
+          outData.data[i * 4 + 1] = srcData[i * 4 + 1];
+          outData.data[i * 4 + 2] = srcData[i * 4 + 2];
+          outData.data[i * 4 + 3] = mattingMask[i];
+        }
+        outCtx.putImageData(outData, 0, 0);
+        maskImg = outCanvas;
+        uploadMask();
+        seedDye();
+        hud.textContent = "手动抠图已应用";
+        mattingWin.close();
+      };
+      winDoc.getElementById("btnCancel").onclick = () => {
+        mattingWin.close();
+      };
+      let isDrawing = false;
+      let lastShift = false;
+      function handlePointerDown(e) {
+        if (e.target.id !== "mattingCanvas") return;
+        isDrawing = true;
+        lastShift = e.shiftKey;
+        const pos = getCanvasPos(e.clientX, e.clientY);
+        pushUndo();
+        drawAt(pos.x, pos.y, mattingTool === "eraser" ^ lastShift);
+        applyMaskToCanvas();
+      }
+      function handlePointerMove(e) {
+        if (!isDrawing) return;
+        const pos = getCanvasPos(e.clientX, e.clientY);
+        drawAt(pos.x, pos.y, mattingTool === "eraser" ^ lastShift);
+        applyMaskToCanvas();
+      }
+      function handlePointerUp() {
+        isDrawing = false;
+      }
+      let isPanning = false;
+      let panStart = { x: 0, y: 0 };
+      function handlePointerDownPan(e) {
+        if (e.button === 2) {
+          e.preventDefault();
+          isPanning = true;
+          panStart = { x: e.clientX - mattingPan.x * mattingScale, y: e.clientY - mattingPan.y * mattingScale };
+        }
+      }
+      function handlePointerMovePan(e) {
+        if (!isPanning) return;
+        mattingPan.x = (e.clientX - panStart.x) / mattingScale;
+        mattingPan.y = (e.clientY - panStart.y) / mattingScale;
+        mattingCanvas.style.transform = "translate(" + (mattingPan.x * mattingScale) + "px, " + (mattingPan.y * mattingScale) + "px) scale(" + mattingScale + ")";
+      }
+      function handlePointerUpPan() {
+        isPanning = false;
+      }
+      function handleWheel(e) {
+        e.preventDefault();
+        const rect = mattingCanvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        const factor = e.deltaY > 0 ? 0.9 : 1.11;
+        const newScale = Math.min(4, Math.max(0.25, mattingScale * factor));
+        mattingPan.x = mouseX / newScale - (mouseX / mattingScale - mattingPan.x);
+        mattingPan.y = mouseY / newScale - (mouseY / mattingScale - mattingPan.y);
+        mattingScale = newScale;
+        mattingCanvas.style.transform = "translate(" + (mattingPan.x * mattingScale) + "px, " + (mattingPan.y * mattingScale) + "px) scale(" + mattingScale + ")";
+      }
+      mattingCanvas.addEventListener("pointerdown", handlePointerDown);
+      mattingCanvas.addEventListener("pointermove", handlePointerMove);
+      mattingCanvas.addEventListener("pointerup", handlePointerUp);
+      mattingCanvas.addEventListener("pointerleave", handlePointerUp);
+      mattingCanvas.addEventListener("pointerdown", handlePointerDownPan);
+      mattingCanvas.addEventListener("pointermove", handlePointerMovePan);
+      mattingCanvas.addEventListener("pointerup", handlePointerUpPan);
+      mattingCanvas.addEventListener("wheel", handleWheel, { passive: false });
+      mattingCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
+      winDoc.addEventListener("keydown", (e) => { if (e.code === "Space") mattingCanvas.style.cursor = "grab"; });
+      winDoc.addEventListener("keyup", (e) => { if (e.code === "Space") mattingCanvas.style.cursor = "crosshair"; });
+      mattingWin.onbeforeunload = () => {
+        mattingWin = null;
+        mattingCanvas = null;
+        mattingCtx = null;
+        mattingImg = null;
+        mattingMask = null;
+      };
+    };
+  }
 
   /** 把笔迹写进 paint 层（不重建掩码） */
   function stampInto(gx, gy) {
